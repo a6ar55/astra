@@ -15,12 +15,15 @@ import {
   FaChevronDown,
   FaChevronUp,
   FaChartPie,
-  FaCrosshairs
+  FaCrosshairs,
+  FaUser
 } from 'react-icons/fa'
 import { motion, AnimatePresence } from 'framer-motion'
+import { useUser } from '@clerk/clerk-react'
 
 const Sidebar = ({ isOpen }) => {
   const location = useLocation()
+  const { user } = useUser()
   const [threatSubmenuOpen, setThreatSubmenuOpen] = useState(true)
   const [toolsSubmenuOpen, setToolsSubmenuOpen] = useState(false)
   const [reportsSubmenuOpen, setReportsSubmenuOpen] = useState(false)
@@ -34,6 +37,39 @@ const Sidebar = ({ isOpen }) => {
     },
     closed: { opacity: 0, y: 20, transition: { duration: 0.2 } }
   }
+
+  // Get user initials for the avatar
+  const getUserInitials = () => {
+    if (!user) return '';
+    
+    const firstName = user.firstName || '';
+    const lastName = user.lastName || '';
+    
+    if (firstName && lastName) {
+      return `${firstName.charAt(0)}${lastName.charAt(0)}`;
+    } else if (firstName) {
+      return firstName.charAt(0);
+    } else if (user.emailAddresses && user.emailAddresses[0]) {
+      return user.emailAddresses[0].emailAddress.charAt(0).toUpperCase();
+    } else {
+      return '?';
+    }
+  };
+  
+  // Get display name
+  const getDisplayName = () => {
+    if (!user) return 'User';
+    
+    if (user.firstName && user.lastName) {
+      return `${user.firstName} ${user.lastName}`;
+    } else if (user.firstName) {
+      return user.firstName;
+    } else if (user.emailAddresses && user.emailAddresses[0]) {
+      return user.emailAddresses[0].emailAddress.split('@')[0];
+    } else {
+      return 'User';
+    }
+  };
   
   return (
     <aside 
@@ -43,9 +79,9 @@ const Sidebar = ({ isOpen }) => {
         {/* Sidebar header */}
         <div className="h-16 px-4 flex items-center border-b border-slate-700">
           <div className="flex items-center">
-            <FaShieldAlt className="h-8 w-8 text-blue-400" />
-            <span className="ml-2 text-xl font-bold tracking-tight text-white">
-              Threat<span className="text-blue-400">Shield</span>
+            <img src="/astra-logo.svg" alt="Astra Logo" className="h-8 w-8" />
+            <span className="ml-2 text-2xl font-extrabold tracking-tight text-blue-400">
+              Astra
             </span>
           </div>
         </div>
@@ -255,22 +291,22 @@ const Sidebar = ({ isOpen }) => {
           </ul>
         </div>
         
-        {/* Sidebar footer */}
-        <div className="p-4 border-t border-slate-700">
-          <div className="bg-slate-750 rounded-md p-3">
+        {/* Sidebar footer - user profile */}
+        {user && (
+          <div className="p-4 border-t border-slate-700">
             <div className="flex items-center">
               <div className="flex-shrink-0">
                 <div className="h-8 w-8 rounded-full bg-slate-600 flex items-center justify-center text-white border border-slate-500">
-                  LE
+                  {getUserInitials()}
                 </div>
               </div>
               <div className="ml-3">
-                <p className="text-sm font-medium text-white">Law Enforcement</p>
-                <p className="text-xs text-slate-400">Intelligence Division</p>
+                <p className="text-sm font-medium text-white">{getDisplayName()}</p>
+                <p className="text-xs text-slate-400">{user.emailAddresses?.[0]?.emailAddress || ''}</p>
               </div>
             </div>
           </div>
-        </div>
+        )}
       </div>
     </aside>
   )

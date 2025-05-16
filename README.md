@@ -1,4 +1,4 @@
-# Threat Detection Platform
+# Astra
 
 ## Overview
 

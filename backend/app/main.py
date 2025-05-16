@@ -75,8 +75,8 @@ class ThreatMapFilterRequest(BaseModel):
 
 # Create FastAPI app
 app = FastAPI(
-    title="Threat Detection API",
-    description="API for detecting threatening content in text",
+    title="Astra API",
+    description="Astra: API for detecting threatening content in text",
     version="1.0.0"
 )
 

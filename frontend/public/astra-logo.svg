@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<svg width="64" height="64" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="astraBlue" x1="0" y1="0" x2="64" y2="64" gradientUnits="userSpaceOnUse">
+      <stop stop-color="#3B82F6"/>
+      <stop offset="1" stop-color="#2563EB"/>
+    </linearGradient>
+  </defs>
+  <circle cx="32" cy="32" r="32" fill="url(#astraBlue)"/>
+  <polygon points="32,10 38,28 58,28 42,40 48,58 32,48 16,58 22,40 6,28 26,28" fill="#fff" opacity="0.95"/>
+  <text x="32" y="42" text-anchor="middle" font-family="JetBrains Mono, monospace" font-size="20" fill="#2563EB" font-weight="bold">A</text>
+</svg> 

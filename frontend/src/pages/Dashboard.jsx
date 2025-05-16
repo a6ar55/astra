@@ -2,6 +2,7 @@ import { useState, useEffect } from 'react'
 import axios from 'axios'
 import { toast } from 'react-toastify'
 import ThreatChart from '../components/ThreatChart'
+import { useUser } from '@clerk/clerk-react'
 import { 
   FaShieldAlt, 
   FaExclamationTriangle, 
@@ -21,121 +22,182 @@ import {
 import { motion, AnimatePresence } from 'framer-motion'
 
 const Dashboard = ({ apiStatus, addToHistory }) => {
+  const { user } = useUser()
+  const userId = user?.id || 'anonymous'
+  
   const [text, setText] = useState('')
   const [result, setResult] = useState(null)
   const [loading, setLoading] = useState(false)
+  
+  // Initialize with empty values for a new user
   const [threatStats, setThreatStats] = useState({
-    totalAnalyzed: 12587,
-    threatsDetected: 3429,
-    highSeverity: 876,
-    averageConfidence: 92.7,
-    recentChange: 12.4,
-    lastUpdated: '2 minutes ago'
+    totalAnalyzed: 0,
+    threatsDetected: 0,
+    highSeverity: 0,
+    averageConfidence: 0,
+    recentChange: 0,
+    lastUpdated: 'Never'
   })
+  
   const [threatCategories, setThreatCategories] = useState([
-    { category: 'Hate Speech/Extremism', count: 1245, trend: 'up', percentage: 36.3 },
-    { category: 'Direct Violence Threats', count: 834, trend: 'up', percentage: 24.3 },
-    { category: 'Harassment and Intimidation', count: 647, trend: 'down', percentage: 18.9 },
-    { category: 'Criminal Activity', count: 412, trend: 'neutral', percentage: 12.0 },
-    { category: 'Child Safety Threats', count: 291, trend: 'down', percentage: 8.5 }
+    { category: 'Hate Speech/Extremism', count: 0, trend: 'neutral', percentage: 0 },
+    { category: 'Direct Violence Threats', count: 0, trend: 'neutral', percentage: 0 },
+    { category: 'Harassment and Intimidation', count: 0, trend: 'neutral', percentage: 0 },
+    { category: 'Criminal Activity', count: 0, trend: 'neutral', percentage: 0 },
+    { category: 'Child Safety Threats', count: 0, trend: 'neutral', percentage: 0 }
   ])
   
+  // Load user-specific stats from localStorage on component mount
+  useEffect(() => {
+    if (!userId) return;
+    
+    const savedStats = localStorage.getItem(`threat-stats-${userId}`);
+    const savedCategories = localStorage.getItem(`threat-categories-${userId}`);
+    
+    if (savedStats) {
+      try {
+        setThreatStats(JSON.parse(savedStats));
+      } catch (error) {
+        console.error('Failed to parse saved stats:', error);
+      }
+    }
+    
+    if (savedCategories) {
+      try {
+        setThreatCategories(JSON.parse(savedCategories));
+      } catch (error) {
+        console.error('Failed to parse saved categories:', error);
+      }
+    }
+  }, [userId]);
+
+  // Save stats to localStorage whenever they change
+  useEffect(() => {
+    if (!userId) return;
+    
+    localStorage.setItem(`threat-stats-${userId}`, JSON.stringify(threatStats));
+  }, [threatStats, userId]);
+  
+  useEffect(() => {
+    if (!userId) return;
+    
+    localStorage.setItem(`threat-categories-${userId}`, JSON.stringify(threatCategories));
+  }, [threatCategories, userId]);
+
   const handleSubmit = async (e) => {
     e.preventDefault()
-    
-    if (!text.trim()) {
-      toast.error('Please enter some text to analyze')
-      return
-    }
-    
-    if (apiStatus !== 'online') {
-      toast.error('API is not available. Please check the connection.')
-      return
-    }
-    
+    if (!text || loading || apiStatus !== 'online') return
+
     setLoading(true)
-    setResult(null)
-    
     try {
       const response = await axios.post('/api/predict', { text })
-      setResult(response.data)
-      addToHistory(response.data)
-      toast.success('Analysis complete')
+      
+      if (response.data) {
+        const result = {
+          text,
+          result: response.data,
+          timestamp: new Date().toISOString()
+        }
+        
+        setResult(result)
+        
+        // Add to history
+        addToHistory(result)
+        
+        // Update user stats
+        const newStats = { ...threatStats }
+        newStats.totalAnalyzed += 1
+        
+        if (response.data.threat) {
+          newStats.threatsDetected += 1
+          
+          if (getThreatSeverity(response.data.predicted_class, response.data.confidence) === 'high' || 
+              getThreatSeverity(response.data.predicted_class, response.data.confidence) === 'critical') {
+            newStats.highSeverity += 1
+          }
+          
+          // Update average confidence
+          newStats.averageConfidence = ((newStats.averageConfidence * (newStats.threatsDetected - 1)) + 
+                                       (response.data.confidence * 100)) / newStats.threatsDetected
+          
+          // Round to 1 decimal place
+          newStats.averageConfidence = Math.round(newStats.averageConfidence * 10) / 10
+        }
+        
+        // Update last updated
+        newStats.lastUpdated = 'Just now'
+        
+        // Update recent change (simulate some activity)
+        newStats.recentChange = Math.round((Math.random() * 5 + 1) * 10) / 10
+        
+        setThreatStats(newStats)
+        
+        // Update categories
+        if (response.data.threat && response.data.predicted_class) {
+          const newCategories = [...threatCategories]
+          const categoryIndex = newCategories.findIndex(c => 
+            c.category.toLowerCase().includes(response.data.predicted_class.toLowerCase()) ||
+            response.data.predicted_class.toLowerCase().includes(c.category.toLowerCase())
+          )
+          
+          if (categoryIndex !== -1) {
+            newCategories[categoryIndex].count += 1
+            
+            // Recalculate percentages
+            const totalThreats = newCategories.reduce((acc, curr) => acc + curr.count, 0)
+            
+            newCategories.forEach((cat, i) => {
+              cat.percentage = totalThreats > 0 ? Math.round(cat.count / totalThreats * 1000) / 10 : 0
+              
+              // Randomly set trend for demonstration
+              cat.trend = i === categoryIndex ? 'up' : Math.random() > 0.5 ? 'neutral' : 'down'
+            })
+            
+            setThreatCategories(newCategories)
+          }
+        }
+        
+        toast.success('Analysis completed successfully')
+      }
     } catch (error) {
-      console.error('Prediction error:', error)
-      toast.error(error.response?.data?.detail || 'Failed to analyze text')
+      console.error('Analysis error:', error)
+      toast.error(error.response?.data?.error || 'Failed to analyze text')
     } finally {
       setLoading(false)
     }
   }
   
   const getThreatSeverity = (threatClass, confidence) => {
-    // Determine severity based on class and confidence
-    if (!threatClass || threatClass === 'Non-threat/Neutral') return 'none';
+    if (!threatClass) return 'none'
     
-    const highRiskClasses = ['Direct Violence Threats', 'Child Safety Threats'];
-    const confidence100 = confidence * 100;
+    // Convert confidence to percentage for comparison
+    const confidencePercent = confidence * 100;
     
-    if (highRiskClasses.includes(threatClass) && confidence100 > 85) return 'critical';
-    if (confidence100 > 90) return 'high';
-    if (confidence100 > 75) return 'medium';
-    return 'low';
-  }
-  
-  const getThreatLevelClass = (threatClass, confidence) => {
-    const severity = getThreatSeverity(threatClass, confidence);
-    
-    switch(severity) {
-      case 'critical':
-        return 'bg-gradient-to-r from-red-600 to-red-500 text-white font-bold shadow-lg shadow-red-500/30'
-      case 'high':
-        return 'bg-gradient-to-r from-orange-600 to-red-400 text-white shadow-lg shadow-orange-500/30'
-      case 'medium':
-        return 'bg-gradient-to-r from-amber-500 to-orange-400 text-white shadow shadow-amber-500/30'
-      case 'low':
-        return 'bg-gradient-to-r from-yellow-500 to-amber-400 text-white shadow shadow-yellow-500/20'
-      case 'none':
-        return 'bg-gradient-to-r from-emerald-500 to-green-400 text-white shadow shadow-emerald-500/20'
-      default:
-        return 'bg-gradient-to-r from-slate-600 to-slate-500 text-white'
+    // Combined logic based on threat class and confidence
+    if (confidencePercent >= 90) {
+      if (threatClass.includes('Violence') || threatClass.includes('Child')) {
+        return 'critical'
+      } else {
+        return 'high'
+      }
+    } else if (confidencePercent >= 70) {
+      if (threatClass.includes('Violence') || threatClass.includes('Child')) {
+        return 'high'
+      } else {
+        return 'medium'
+      }
+    } else {
+      return 'low'
     }
   }
   
-  const getThreatLevelIcon = (threatClass, confidence) => {
-    const severity = getThreatSeverity(threatClass, confidence);
-    
+  const getSeverityColor = (severity) => {
     switch(severity) {
-      case 'critical':
-        return <FaExclamationCircle size={24} className="animate-pulse" />
-      case 'high':
-        return <FaExclamationTriangle size={24} />
-      case 'medium':
-        return <FaFlag size={24} />
-      case 'low':
-        return <FaUserShield size={24} />
-      case 'none':
-        return <FaShieldAlt size={24} />
-      default:
-        return <FaShieldAlt size={24} />
-    }
-  }
-  
-  const getSeverityLabel = (threatClass, confidence) => {
-    const severity = getThreatSeverity(threatClass, confidence);
-    
-    switch(severity) {
-      case 'critical':
-        return 'CRITICAL SEVERITY'
-      case 'high':
-        return 'HIGH SEVERITY'
-      case 'medium':
-        return 'MEDIUM SEVERITY'
-      case 'low':
-        return 'LOW SEVERITY'
-      case 'none':
-        return 'NO THREAT DETECTED'
-      default:
-        return 'UNKNOWN'
+      case 'critical': return 'bg-red-600'
+      case 'high': return 'bg-orange-500'
+      case 'medium': return 'bg-yellow-500'
+      case 'low': return 'bg-blue-500'
+      default: return 'bg-green-500'
     }
   }
   
@@ -195,6 +257,20 @@ const Dashboard = ({ apiStatus, addToHistory }) => {
     }
   }
 
+  // Get welcome message based on user
+  const getWelcomeMessage = () => {
+    if (!user) return "Monitor and analyze potential threats in real-time.";
+    
+    const firstName = user.firstName || "";
+    const lastName = user.lastName || "";
+    
+    if (firstName) {
+      return `Welcome, ${firstName}! Your personal threat intelligence dashboard.`;
+    } else {
+      return "Welcome to your personal threat intelligence dashboard.";
+    }
+  }
+
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
       {/* Dashboard Header with Stats */}
@@ -217,7 +293,7 @@ const Dashboard = ({ apiStatus, addToHistory }) => {
           </div>
         </div>
         <p className="text-slate-400 max-w-3xl">
-          Monitor and analyze potential threats in real-time. The advanced AI-powered system detects and classifies threats with high precision, providing actionable intelligence for law enforcement.
+          {getWelcomeMessage()} The advanced AI-powered system detects and classifies threats with high precision, providing actionable intelligence.
         </p>
       </motion.div>
       
@@ -239,7 +315,11 @@ const Dashboard = ({ apiStatus, addToHistory }) => {
             </div>
           </div>
           <div className="mt-2 text-xs text-slate-400">
-            <span className="text-green-400">+{threatStats.recentChange}%</span> from last week
+            {threatStats.recentChange > 0 ? (
+              <span className="text-green-400">+{threatStats.recentChange}%</span>
+            ) : (
+              <span>No recent activity</span>
+            )}
           </div>
         </motion.div>
         
@@ -254,7 +334,11 @@ const Dashboard = ({ apiStatus, addToHistory }) => {
             </div>
           </div>
           <div className="mt-2 text-xs text-slate-400">
-            <span className="text-red-400">{Math.round(threatStats.threatsDetected/threatStats.totalAnalyzed*100)}%</span> of total content
+            {threatStats.totalAnalyzed > 0 ? (
+              <span className="text-red-400">{Math.round(threatStats.threatsDetected/threatStats.totalAnalyzed*100)}%</span>
+            ) : (
+              <span>0%</span>
+            )} of total content
           </div>
         </motion.div>
         
@@ -269,7 +353,11 @@ const Dashboard = ({ apiStatus, addToHistory }) => {
             </div>
           </div>
           <div className="mt-2 text-xs text-slate-400">
-            <span className="text-amber-400">{Math.round(threatStats.highSeverity/threatStats.threatsDetected*100)}%</span> of threats
+            {threatStats.threatsDetected > 0 ? (
+              <span className="text-amber-400">{Math.round(threatStats.highSeverity/threatStats.threatsDetected*100)}%</span>
+            ) : (
+              <span>0%</span>
+            )} of threats
           </div>
         </motion.div>
         
@@ -277,14 +365,18 @@ const Dashboard = ({ apiStatus, addToHistory }) => {
           <div className="flex items-start justify-between">
             <div>
               <p className="text-slate-400 text-sm font-medium">Avg Confidence</p>
-              <h3 className="text-2xl font-bold mt-1 text-white">{threatStats.averageConfidence}%</h3>
+              <h3 className="text-2xl font-bold mt-1 text-white">{threatStats.averageConfidence > 0 ? `${threatStats.averageConfidence.toFixed(1)}%` : "N/A"}</h3>
             </div>
             <div className="p-2 rounded-md bg-emerald-500/20 text-emerald-400">
               <FaClipboardCheck size={18} />
             </div>
           </div>
           <div className="mt-2 text-xs text-slate-400">
-            <span className="text-emerald-400">High precision</span> detection
+            {threatStats.averageConfidence > 0 ? (
+              <span className="text-emerald-400">High precision</span>
+            ) : (
+              <span>No data yet</span>
+            )}
           </div>
         </motion.div>
       </motion.div>
@@ -332,7 +424,7 @@ const Dashboard = ({ apiStatus, addToHistory }) => {
         transition={{ delay: 0.2, duration: 0.5 }}
       >
         {/* Input form */}
-        <div className="lg:col-span-3">
+        <div className="lg:col-span-2">
           <div className="card mb-4 bg-slate-800 shadow-lg border-t border-slate-700">
             <div className="flex items-center justify-between mb-4">
               <h2 className="text-xl font-bold text-white">Threat Analysis</h2>
@@ -397,46 +489,36 @@ const Dashboard = ({ apiStatus, addToHistory }) => {
             </form>
           </div>
           
-          <div className="grid grid-cols-2 gap-4">
-            <div className="card bg-slate-800 shadow border-t border-slate-700">
-              <h3 className="text-lg font-medium text-white mb-2">Quick Access</h3>
-              <div className="grid grid-cols-2 gap-2">
-                <button className="btn btn-sm btn-secondary">
-                  <FaHistory className="mr-1.5" /> Past Analyses
-                </button>
-                <button className="btn btn-sm btn-secondary">
-                  <FaDatabase className="mr-1.5" /> Saved Cases
-                </button>
-                <button className="btn btn-sm btn-secondary">
-                  <FaGlobe className="mr-1.5" /> Threat Maps
-                </button>
-                <button className="btn btn-sm btn-secondary">
-                  <FaCrosshairs className="mr-1.5" /> Analytics
-                </button>
+          {/* Recent activity - could be implemented instead of the placeholder */}
+          {threatStats.totalAnalyzed === 0 && (
+            <div className="card bg-slate-800 shadow-lg border-t border-slate-700 p-4">
+              <div className="flex items-center text-slate-400 mb-3">
+                <FaHistory className="mr-2" />
+                <h3 className="text-lg font-medium text-white">Getting Started</h3>
               </div>
+              <p className="text-slate-300 text-sm mb-3">
+                Welcome to Astra! Your personal threat analytics dashboard is ready.
+              </p>
+              <ul className="text-xs text-slate-400 space-y-2">
+                <li className="flex items-center">
+                  <div className="h-1.5 w-1.5 rounded-full bg-blue-500 mr-2"></div>
+                  Enter text in the analysis box to begin detecting threats
+                </li>
+                <li className="flex items-center">
+                  <div className="h-1.5 w-1.5 rounded-full bg-blue-500 mr-2"></div>
+                  Your results and stats will be saved to your profile
+                </li>
+                <li className="flex items-center">
+                  <div className="h-1.5 w-1.5 rounded-full bg-blue-500 mr-2"></div>
+                  Use batch analysis for processing multiple entries at once
+                </li>
+              </ul>
             </div>
-            <div className="card bg-slate-800 shadow border-t border-slate-700">
-              <h3 className="text-lg font-medium text-white mb-3">Analysis Mode</h3>
-              <div className="flex flex-col space-y-2">
-                <div className="flex items-center">
-                  <input type="radio" id="standard" name="mode" className="mr-2" defaultChecked />
-                  <label htmlFor="standard" className="text-slate-300">Standard Analysis</label>
-                </div>
-                <div className="flex items-center">
-                  <input type="radio" id="deep" name="mode" className="mr-2" />
-                  <label htmlFor="deep" className="text-slate-300">Deep Analysis</label>
-                </div>
-                <div className="flex items-center">
-                  <input type="radio" id="forensic" name="mode" className="mr-2" />
-                  <label htmlFor="forensic" className="text-slate-300">Forensic Mode</label>
-                </div>
-              </div>
-            </div>
-          </div>
+          )}
         </div>
         
         {/* Results panel */}
-        <div className="lg:col-span-2">
+        <div className="lg:col-span-3">
           <AnimatePresence mode="wait">
             {result ? (
               <motion.div 
@@ -445,7 +527,8 @@ const Dashboard = ({ apiStatus, addToHistory }) => {
                 animate={{ opacity: 1, x: 0 }}
                 exit={{ opacity: 0, x: -20 }}
                 transition={{ type: "spring", stiffness: 300, damping: 30 }}
-                className="card bg-slate-800 shadow-lg border-t border-slate-700 h-full"
+                className="card bg-slate-800 shadow-lg border-t border-slate-700 h-full overflow-y-auto"
+                style={{ minHeight: '700px' }}
               >
                 <div className="flex justify-between items-start mb-6">
                   <h2 className="text-xl font-bold text-white">Analysis Results</h2>
@@ -454,69 +537,77 @@ const Dashboard = ({ apiStatus, addToHistory }) => {
                   </div>
                 </div>
                 
-                <div className="mb-6">
-                  <div className={`rounded-lg px-4 py-3 flex items-center space-x-3 ${getThreatLevelClass(result.predicted_class, result.confidence)}`}>
-                    {getThreatLevelIcon(result.predicted_class, result.confidence)}
-                    <div>
-                      <div className="text-xs font-bold tracking-wider">{getSeverityLabel(result.predicted_class, result.confidence)}</div>
-                      <div className="text-lg font-semibold">{result.predicted_class}</div>
-                    </div>
-                  </div>
-                  
-                  <div className="mt-4 grid grid-cols-2 gap-3 text-sm">
-                    <div className="bg-slate-900 rounded-md p-3">
-                      <div className="text-slate-400 mb-1">Confidence</div>
-                      <div className="font-semibold text-white">{(result.confidence * 100).toFixed(2)}%</div>
-                    </div>
-                    
-                    <div className="bg-slate-900 rounded-md p-3">
-                      <div className="text-slate-400 mb-1">Classification</div>
-                      <div className="font-semibold text-white">{result.threat ? 'Threat' : 'Non-Threat'}</div>
+                <div className="flex items-center mb-6">
+                  <div className={`h-4 w-4 rounded-full mr-3 ${result.result.threat ? 'bg-red-500' : 'bg-green-500'}`}></div>
+                  <span className={`font-semibold text-lg ${result.result.threat ? 'text-red-400' : 'text-green-400'}`}>
+                    {result.result.threat ? 'Threat Detected' : 'No Threat Detected'}
+                  </span>
+                </div>
+                
+                {result.result.threat && (
+                  <>
+                    <div className="mb-4">
+                      <div className="text-sm text-slate-400 mb-1">Threat Classification</div>
+                      <div className="font-medium text-white">{result.result.predicted_class}</div>
                     </div>
                     
-                    {result.threat_confidence && (
-                      <div className="bg-slate-900 rounded-md p-3">
-                        <div className="text-slate-400 mb-1">Threat Confidence</div>
-                        <div className="font-semibold text-white">{(result.threat_confidence * 100).toFixed(2)}%</div>
+                    <div className="mb-4">
+                      <div className="text-sm text-slate-400 mb-1">Confidence Score</div>
+                      <div className="flex items-center">
+                        <div className="flex-grow h-2 bg-slate-700 rounded-full overflow-hidden">
+                          <div 
+                            className={`h-full ${
+                              result.result.confidence * 100 > 90 ? 'bg-red-500' : 
+                              result.result.confidence * 100 > 70 ? 'bg-orange-500' : 
+                              'bg-yellow-500'
+                            }`}
+                            style={{ width: `${result.result.confidence * 100}%` }}
+                          />
+                        </div>
+                        <span className="text-white font-medium ml-2">{(result.result.confidence * 100).toFixed(1)}%</span>
                       </div>
-                    )}
-                    
-                    <div className="bg-slate-900 rounded-md p-3">
-                      <div className="text-slate-400 mb-1">Response Time</div>
-                      <div className="font-semibold text-white">{result.response_time_ms} ms</div>
                     </div>
-                  </div>
-                </div>
-                
-                <div>
-                  <h3 className="text-lg font-medium text-white mb-3">Classification Breakdown</h3>
-                  <ThreatChart probabilities={result.probabilities} visualizationData={result.visualization_data} />
-                </div>
-                
-                {result.threat && (
-                  <div className="mt-6">
-                    <h3 className="text-lg font-medium text-white mb-3">Recommended Actions</h3>
-                    <ul className="space-y-2">
-                      {getRecommendedActions(result.predicted_class, result.confidence).map((action, index) => (
-                        <li key={index} className="flex items-center text-slate-300">
-                          <div className="w-6 h-6 rounded-full bg-blue-900 text-blue-300 flex items-center justify-center mr-2 text-xs">
-                            {index + 1}
-                          </div>
-                          {action}
-                        </li>
-                      ))}
-                    </ul>
-                  </div>
+                    
+                    {/* Threat Classification Chart */}
+                    <div className="mb-4">
+                      <div className="text-sm text-slate-400 mb-2">Threat Classification Analysis</div>
+                      <div className="mt-2" style={{ minHeight: '350px' }}>
+                        <ThreatChart 
+                          probabilities={result.result.probabilities} 
+                          visualizationData={result.result.visualization_data}
+                        />
+                      </div>
+                    </div>
+                    
+                    <div className="mb-4">
+                      <div className="text-sm text-slate-400 mb-1">Severity</div>
+                      <div className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-opacity-20" 
+                        style={{ backgroundColor: `${getSeverityColor(getThreatSeverity(result.result.predicted_class, result.result.confidence))}40` }}>
+                        <span className={getSeverityColor(getThreatSeverity(result.result.predicted_class, result.result.confidence)).replace('bg-', 'text-')}>
+                          {getThreatSeverity(result.result.predicted_class, result.result.confidence).toUpperCase()}
+                        </span>
+                      </div>
+                    </div>
+                    
+                    <div>
+                      <div className="text-sm text-slate-400 mb-2">Recommended Actions</div>
+                      <ul className="space-y-1">
+                        {getRecommendedActions(result.result.predicted_class, result.result.confidence).map((action, i) => (
+                          <li key={i} className="flex items-center text-xs text-slate-300">
+                            <FaFlag className="text-amber-500 mr-2" size={10} />
+                            <span>{action}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    </div>
+                  </>
                 )}
                 
-                <div className="flex justify-between mt-6 pt-4 border-t border-slate-700">
-                  <button className="btn btn-sm btn-primary">
-                    <FaClipboardCheck className="mr-1.5" /> Create Case
-                  </button>
-                  <button className="btn btn-sm btn-secondary">
-                    <FaRegFilePdf className="mr-1.5" /> Export Report
-                  </button>
-                </div>
+                {!result.result.threat && (
+                  <div className="text-slate-300">
+                    The content was analyzed and no threats were detected.
+                  </div>
+                )}
               </motion.div>
             ) : (
               <motion.div 
