@@ -1,0 +1,56 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  font-synthesis: none;
+  text-rendering: optimizeLegibility;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+/* Custom scroll bar */
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+::-webkit-scrollbar-track {
+  background: #1E293B;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #475569;
+  border-radius: 4px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #64748B;
+}
+
+/* Custom styling layers */
+@layer components {
+  .card {
+    @apply bg-primary rounded-lg shadow-lg p-6;
+  }
+  
+  .btn {
+    @apply px-4 py-2 rounded-md font-medium transition-colors;
+  }
+  
+  .btn-primary {
+    @apply bg-accent hover:bg-accent-dark text-white;
+  }
+  
+  .btn-danger {
+    @apply bg-danger hover:bg-red-600 text-white;
+  }
+  
+  .input {
+    @apply bg-secondary border border-gray-600 text-foreground rounded-md px-4 py-2 focus:outline-none focus:ring-2 focus:ring-accent;
+  }
+  
+  .textarea {
+    @apply bg-secondary border border-gray-600 text-foreground rounded-md px-4 py-2 focus:outline-none focus:ring-2 focus:ring-accent min-h-[120px];
+  }
+} 

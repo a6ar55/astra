@@ -1,0 +1,279 @@
+import { useState } from 'react'
+import { Link, useLocation } from 'react-router-dom'
+import { 
+  FaChartBar, 
+  FaDatabase, 
+  FaHistory, 
+  FaCog, 
+  FaFolderOpen, 
+  FaMap, 
+  FaShieldAlt, 
+  FaLock, 
+  FaExclamationTriangle, 
+  FaUserShield, 
+  FaFileAlt, 
+  FaChevronDown,
+  FaChevronUp,
+  FaChartPie,
+  FaCrosshairs
+} from 'react-icons/fa'
+import { motion, AnimatePresence } from 'framer-motion'
+
+const Sidebar = ({ isOpen }) => {
+  const location = useLocation()
+  const [threatSubmenuOpen, setThreatSubmenuOpen] = useState(true)
+  const [toolsSubmenuOpen, setToolsSubmenuOpen] = useState(false)
+  const [reportsSubmenuOpen, setReportsSubmenuOpen] = useState(false)
+  
+  // Animation variants
+  const itemVariants = {
+    open: {
+      opacity: 1,
+      y: 0,
+      transition: { type: "spring", stiffness: 300, damping: 24 }
+    },
+    closed: { opacity: 0, y: 20, transition: { duration: 0.2 } }
+  }
+  
+  return (
+    <aside 
+      className={`bg-slate-800 border-r border-slate-700 w-64 transition-all duration-300 ease-in-out ${isOpen ? 'translate-x-0' : '-translate-x-full'} fixed h-full z-30 md:relative md:translate-x-0`}
+    >
+      <div className="flex flex-col h-full">
+        {/* Sidebar header */}
+        <div className="h-16 px-4 flex items-center border-b border-slate-700">
+          <div className="flex items-center">
+            <FaShieldAlt className="h-8 w-8 text-blue-400" />
+            <span className="ml-2 text-xl font-bold tracking-tight text-white">
+              Threat<span className="text-blue-400">Shield</span>
+            </span>
+          </div>
+        </div>
+        
+        {/* Sidebar content */}
+        <div className="flex-1 overflow-y-auto py-4 px-3">
+          <ul className="space-y-1">
+            {/* Dashboard link */}
+            <li>
+              <Link 
+                to="/" 
+                className={`flex items-center px-3 py-2 rounded-md text-sm font-medium ${location.pathname === '/' ? 'bg-slate-700 text-white' : 'text-slate-300 hover:bg-slate-700 hover:text-white'}`}
+              >
+                <FaChartBar className="mr-3 text-slate-400" />
+                <span>Dashboard</span>
+              </Link>
+            </li>
+            
+            {/* Threat Analysis section */}
+            <li className="mt-4">
+              <button 
+                className="flex items-center justify-between w-full px-3 py-2 text-slate-400 hover:text-white text-sm font-medium rounded-md"
+                onClick={() => setThreatSubmenuOpen(!threatSubmenuOpen)}
+              >
+                <div className="flex items-center">
+                  <FaExclamationTriangle className="mr-3" />
+                  <span>Threat Analysis</span>
+                </div>
+                {threatSubmenuOpen ? <FaChevronUp /> : <FaChevronDown />}
+              </button>
+              
+              <AnimatePresence>
+                {threatSubmenuOpen && (
+                  <motion.ul 
+                    className="mt-1 space-y-1 pl-6"
+                    initial="closed"
+                    animate="open"
+                    exit="closed"
+                    variants={{
+                      open: { opacity: 1, height: 'auto' },
+                      closed: { opacity: 0, height: 0 }
+                    }}
+                  >
+                    <motion.li variants={itemVariants}>
+                      <Link 
+                        to="/" 
+                        className={`flex items-center px-3 py-2 rounded-md text-sm font-medium ${location.pathname === '/' ? 'bg-slate-700 text-white' : 'text-slate-300 hover:bg-slate-700 hover:text-white'}`}
+                      >
+                        <FaShieldAlt className="mr-3 text-slate-400" />
+                        <span>Single Analysis</span>
+                      </Link>
+                    </motion.li>
+                    <motion.li variants={itemVariants}>
+                      <Link 
+                        to="/batch" 
+                        className={`flex items-center px-3 py-2 rounded-md text-sm font-medium ${location.pathname === '/batch' ? 'bg-slate-700 text-white' : 'text-slate-300 hover:bg-slate-700 hover:text-white'}`}
+                      >
+                        <FaDatabase className="mr-3 text-slate-400" />
+                        <span>Batch Analysis</span>
+                      </Link>
+                    </motion.li>
+                    <motion.li variants={itemVariants}>
+                      <Link 
+                        to="/threat-map" 
+                        className={`flex items-center px-3 py-2 rounded-md text-sm font-medium ${location.pathname === '/threat-map' ? 'bg-slate-700 text-white' : 'text-slate-300 hover:bg-slate-700 hover:text-white'}`}
+                      >
+                        <FaMap className="mr-3 text-slate-400" />
+                        <span>Threat Map</span>
+                        <span className="ml-auto inline-flex items-center justify-center px-2 py-0.5 text-xs leading-none text-red-100 bg-red-800 rounded-full">
+                          Live
+                        </span>
+                      </Link>
+                    </motion.li>
+                  </motion.ul>
+                )}
+              </AnimatePresence>
+            </li>
+            
+            {/* Case Management link */}
+            <li className="mt-1">
+              <Link 
+                to="/cases" 
+                className={`flex items-center px-3 py-2 rounded-md text-sm font-medium ${location.pathname === '/cases' ? 'bg-slate-700 text-white' : 'text-slate-300 hover:bg-slate-700 hover:text-white'}`}
+              >
+                <FaFolderOpen className="mr-3 text-slate-400" />
+                <span>Case Management</span>
+              </Link>
+            </li>
+            
+            {/* Analysis History link */}
+            <li>
+              <Link 
+                to="/history" 
+                className={`flex items-center px-3 py-2 rounded-md text-sm font-medium ${location.pathname === '/history' ? 'bg-slate-700 text-white' : 'text-slate-300 hover:bg-slate-700 hover:text-white'}`}
+              >
+                <FaHistory className="mr-3 text-slate-400" />
+                <span>Analysis History</span>
+              </Link>
+            </li>
+            
+            {/* Tools section */}
+            <li className="mt-4">
+              <button 
+                className="flex items-center justify-between w-full px-3 py-2 text-slate-400 hover:text-white text-sm font-medium rounded-md"
+                onClick={() => setToolsSubmenuOpen(!toolsSubmenuOpen)}
+              >
+                <div className="flex items-center">
+                  <FaUserShield className="mr-3" />
+                  <span>Security Tools</span>
+                </div>
+                {toolsSubmenuOpen ? <FaChevronUp /> : <FaChevronDown />}
+              </button>
+              
+              <AnimatePresence>
+                {toolsSubmenuOpen && (
+                  <motion.ul 
+                    className="mt-1 space-y-1 pl-6"
+                    initial="closed"
+                    animate="open"
+                    exit="closed"
+                    variants={{
+                      open: { opacity: 1, height: 'auto' },
+                      closed: { opacity: 0, height: 0 }
+                    }}
+                  >
+                    <motion.li variants={itemVariants}>
+                      <Link 
+                        to="/tools/scanner" 
+                        className="flex items-center px-3 py-2 rounded-md text-sm font-medium text-slate-300 hover:bg-slate-700 hover:text-white"
+                      >
+                        <FaCrosshairs className="mr-3 text-slate-400" />
+                        <span>Threat Scanner</span>
+                      </Link>
+                    </motion.li>
+                    <motion.li variants={itemVariants}>
+                      <Link 
+                        to="/tools/monitor" 
+                        className="flex items-center px-3 py-2 rounded-md text-sm font-medium text-slate-300 hover:bg-slate-700 hover:text-white"
+                      >
+                        <FaLock className="mr-3 text-slate-400" />
+                        <span>Content Monitor</span>
+                      </Link>
+                    </motion.li>
+                  </motion.ul>
+                )}
+              </AnimatePresence>
+            </li>
+            
+            {/* Reports section */}
+            <li className="mt-1">
+              <button 
+                className="flex items-center justify-between w-full px-3 py-2 text-slate-400 hover:text-white text-sm font-medium rounded-md"
+                onClick={() => setReportsSubmenuOpen(!reportsSubmenuOpen)}
+              >
+                <div className="flex items-center">
+                  <FaFileAlt className="mr-3" />
+                  <span>Reports</span>
+                </div>
+                {reportsSubmenuOpen ? <FaChevronUp /> : <FaChevronDown />}
+              </button>
+              
+              <AnimatePresence>
+                {reportsSubmenuOpen && (
+                  <motion.ul 
+                    className="mt-1 space-y-1 pl-6"
+                    initial="closed"
+                    animate="open"
+                    exit="closed"
+                    variants={{
+                      open: { opacity: 1, height: 'auto' },
+                      closed: { opacity: 0, height: 0 }
+                    }}
+                  >
+                    <motion.li variants={itemVariants}>
+                      <Link 
+                        to="/reports/summary" 
+                        className="flex items-center px-3 py-2 rounded-md text-sm font-medium text-slate-300 hover:bg-slate-700 hover:text-white"
+                      >
+                        <FaChartPie className="mr-3 text-slate-400" />
+                        <span>Summary Reports</span>
+                      </Link>
+                    </motion.li>
+                    <motion.li variants={itemVariants}>
+                      <Link 
+                        to="/reports/threat" 
+                        className="flex items-center px-3 py-2 rounded-md text-sm font-medium text-slate-300 hover:bg-slate-700 hover:text-white"
+                      >
+                        <FaExclamationTriangle className="mr-3 text-slate-400" />
+                        <span>Threat Reports</span>
+                      </Link>
+                    </motion.li>
+                  </motion.ul>
+                )}
+              </AnimatePresence>
+            </li>
+            
+            {/* Settings link */}
+            <li className="mt-1">
+              <Link 
+                to="/settings" 
+                className={`flex items-center px-3 py-2 rounded-md text-sm font-medium ${location.pathname === '/settings' ? 'bg-slate-700 text-white' : 'text-slate-300 hover:bg-slate-700 hover:text-white'}`}
+              >
+                <FaCog className="mr-3 text-slate-400" />
+                <span>Settings</span>
+              </Link>
+            </li>
+          </ul>
+        </div>
+        
+        {/* Sidebar footer */}
+        <div className="p-4 border-t border-slate-700">
+          <div className="bg-slate-750 rounded-md p-3">
+            <div className="flex items-center">
+              <div className="flex-shrink-0">
+                <div className="h-8 w-8 rounded-full bg-slate-600 flex items-center justify-center text-white border border-slate-500">
+                  LE
+                </div>
+              </div>
+              <div className="ml-3">
+                <p className="text-sm font-medium text-white">Law Enforcement</p>
+                <p className="text-xs text-slate-400">Intelligence Division</p>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </aside>
+  )
+}
+
+export default Sidebar 
