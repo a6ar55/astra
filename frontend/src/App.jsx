@@ -6,6 +6,8 @@ import Dashboard from './pages/Dashboard'
 import History from './pages/History'
 import Settings from './pages/Settings'
 import BatchAnalysis from './pages/BatchAnalysis'
+import TwitterSearch from './pages/TwitterSearch'
+import TwitterThreats from './pages/TwitterThreats'
 import { toast } from 'react-toastify'
 import axios from 'axios'
 import { ToastContainer } from 'react-toastify'
@@ -17,7 +19,8 @@ import {
   SignedOut,
   SignInButton,
   SignUpButton,
-  UserButton
+  UserButton,
+  useUser
 } from "@clerk/clerk-react";
 import Home from './pages/Home';
 import About from './pages/About';
@@ -32,23 +35,261 @@ function App() {
   const [apiStatus, setApiStatus] = useState('loading')
   const [sidebarOpen, setSidebarOpen] = useState(true)
   const [history, setHistory] = useState([])
+  const [userStats, setUserStats] = useState(null)
+  const [userCategories, setUserCategories] = useState(null)
+  const { user, isLoaded, isSignedIn } = useUser()
   
-  // Load prediction history from localStorage on mount
-  useEffect(() => {
-    const savedHistory = localStorage.getItem('detection-history')
+  // Function to load user-specific data
+  const loadUserData = async () => {
+    if (isLoaded && isSignedIn && user) {
+      try {
+        console.log("Loading data for user with ID:", user.id);
+        
+        // Add user_id header to all requests
+        axios.defaults.headers.common['user_id'] = user.id;
+        
+        // First, make sure the user is registered
+        try {
+          console.log("Registering/updating user in Firebase");
+          await axios.post('/api/user/register', {
+            user_id: user.id,
+            email: user.emailAddresses[0]?.emailAddress || `${user.id}@example.com`,
+            first_name: user.firstName,
+            last_name: user.lastName
+          });
+          console.log("User registration/update successful");
+        } catch (regError) {
+          console.error("Error registering user:", regError);
+          console.error("Registration error details:", regError.response?.data || regError.message);
+          toast.error("Error registering user. Some features may not work correctly.");
+          // Continue anyway to try loading data
+        }
+        
+        // Load stats with explicit headers
+        try {
+          console.log("Loading user stats from API");
+          const statsResponse = await axios.get('/api/user/stats', {
+            headers: { 'user_id': user.id }
+          });
+          
+          if (statsResponse.data) {
+            console.log("Successfully loaded stats from API:", statsResponse.data);
+            setUserStats(statsResponse.data.stats);
+            setUserCategories(statsResponse.data.categories);
+            
+            // Save to localStorage as backup
+            localStorage.setItem(`threat-stats-${user.id}`, JSON.stringify(statsResponse.data.stats));
+            localStorage.setItem(`threat-categories-${user.id}`, JSON.stringify(statsResponse.data.categories));
+          }
+        } catch (statsError) {
+          console.error("Error loading user stats:", statsError);
+          console.error("Stats error details:", statsError.response?.data || statsError.message);
+          toast.warning("Couldn't load user stats from server");
+          
+          // Try to load from localStorage as fallback
+          const savedStats = localStorage.getItem(`threat-stats-${user.id}`);
+          const savedCategories = localStorage.getItem(`threat-categories-${user.id}`);
+          
+          if (savedStats) {
+            try {
+              setUserStats(JSON.parse(savedStats));
+            } catch (e) {
+              console.error("Error parsing saved stats:", e);
+            }
+          }
+          
+          if (savedCategories) {
+            try {
+              setUserCategories(JSON.parse(savedCategories));
+            } catch (e) {
+              console.error("Error parsing saved categories:", e);
+            }
+          }
+        }
+        
+        // Load history with retry logic
+        let retries = 0;
+        const MAX_RETRIES = 3;
+        
+        const fetchHistory = async () => {
+          try {
+            console.log(`Loading user history from API (attempt ${retries + 1}/${MAX_RETRIES})`);
+            const historyResponse = await axios.get('/api/user/history', {
+              headers: { 'user_id': user.id }
+            });
+            
+            if (historyResponse.data && Array.isArray(historyResponse.data)) {
+              console.log(`Successfully loaded ${historyResponse.data.length} history items from API:`, 
+                         historyResponse.data.length > 0 ? historyResponse.data.slice(0, 2) : 'No items');
+              
+              // Process history data to ensure all required fields are present
+              const processedHistory = historyResponse.data
+                .filter(item => item) // Filter out any null/undefined items
+                .map(item => {
+                  // Ensure we have consistent field naming
+                  const processed = {
+                    ...item,
+                    text: item.text || item.threat_content || "",
+                    predicted_class: item.predicted_class || item.threat_class || "Unknown",
+                    confidence: typeof item.confidence === 'number' ? item.confidence : 
+                                (typeof item.threat_confidence === 'number' ? item.threat_confidence / 100 : 0.5)
+                  };
+                  
+                  // Ensure we have probabilities for visualization
+                  if (!processed.probabilities || Object.keys(processed.probabilities).length === 0) {
+                    // Create default probabilities
+                    processed.probabilities = {
+                      "Direct Violence Threats": 0.05,
+                      "Criminal Activity": 0.05,
+                      "Harassment and Intimidation": 0.05,
+                      "Hate Speech/Extremism": 0.05,
+                      "Child Safety Threats": 0.05,
+                      "Non-threat/Neutral": 0.75
+                    };
+                    
+                    // If we have a predicted class, boost its probability
+                    if (processed.predicted_class && processed.predicted_class in processed.probabilities) {
+                      processed.probabilities[processed.predicted_class] = processed.confidence || 0.8;
+                    }
+                  }
+                  
+                  return processed;
+                });
+              
+              setHistory(processedHistory);
+              // Make history available globally for reporting and export functions
+              window.historyData = processedHistory;
+              
+              // Save as backup
+              localStorage.setItem(`detection-history-${user.id}`, JSON.stringify(processedHistory));
+              return true; // Success
+            } else {
+              console.warn("API returned empty or invalid history data", historyResponse.data);
+              return false;
+            }
+          } catch (historyError) {
+            console.error("Error loading user history:", historyError);
+            console.error("History error details:", historyError.response?.data || historyError.message);
+            return false;
+          }
+        };
+        
+        // Try to fetch history with retries
+        let historySuccess = false;
+        while (retries < MAX_RETRIES && !historySuccess) {
+          historySuccess = await fetchHistory();
+          if (!historySuccess) {
+            retries++;
+            if (retries < MAX_RETRIES) {
+              console.log(`Retrying history fetch in 1 second... (${retries}/${MAX_RETRIES})`);
+              await new Promise(r => setTimeout(r, 1000)); // Wait 1 second between retries
+            }
+          }
+        }
+        
+        // If all retries failed, fall back to localStorage
+        if (!historySuccess) {
+          toast.warning("Couldn't load history from server after multiple attempts");
+          loadHistoryFromLocalStorage();
+        }
+        
+      } catch (error) {
+        console.error('Error in user data loading flow:', error);
+        
+        // Fall back to localStorage if API fails completely
+        toast.error("Failed to load data from server. Using local storage instead.");
+        loadFromLocalStorage();
+      }
+    } else {
+      // Not signed in, use localStorage
+      console.log("User not signed in, using localStorage");
+      loadFromLocalStorage();
+    }
+  };
+  
+  // Helper function to just load history from localStorage
+  const loadHistoryFromLocalStorage = () => {
+    const savedHistory = localStorage.getItem('detection-history');
     if (savedHistory) {
       try {
-        setHistory(JSON.parse(savedHistory))
+        const parsedHistory = JSON.parse(savedHistory);
+        setHistory(parsedHistory);
+        window.historyData = parsedHistory;
       } catch (error) {
-        console.error('Failed to parse history:', error)
+        console.error('Failed to parse history from localStorage:', error);
       }
     }
-  }, [])
+  };
   
-  // Save history to localStorage whenever it changes
+  // Add the loadFromLocalStorage function
+  const loadFromLocalStorage = () => {
+    // Load prediction history from localStorage
+    loadHistoryFromLocalStorage();
+    
+    // Also attempt to load any user stats from localStorage
+    const savedStats = localStorage.getItem(`threat-stats-${user?.id || 'anonymous'}`);
+    if (savedStats) {
+      try {
+        const parsedStats = JSON.parse(savedStats);
+        setUserStats(parsedStats);
+      } catch (error) {
+        console.error('Failed to parse stats from localStorage:', error);
+      }
+    }
+    
+    // And categories if available
+    const savedCategories = localStorage.getItem(`threat-categories-${user?.id || 'anonymous'}`);
+    if (savedCategories) {
+      try {
+        const parsedCategories = JSON.parse(savedCategories);
+        setUserCategories(parsedCategories);
+      } catch (error) {
+        console.error('Failed to parse categories from localStorage:', error);
+      }
+    }
+  };
+  
+  // Make sure to properly register the user before loading data
   useEffect(() => {
-    localStorage.setItem('detection-history', JSON.stringify(history))
-  }, [history])
+    if (isLoaded && isSignedIn && user) {
+      console.log("User loaded, loading user data");
+      loadUserData();
+    }
+  }, [isLoaded, isSignedIn, user?.id]);
+  
+  // Add this effect to save history proactively when it changes for signed-in users
+  useEffect(() => {
+    if (isLoaded && isSignedIn && user && history.length > 0) {
+      console.log("Saving history automatically for signed-in user");
+      
+      // We don't need to explicitly save to server as the API endpoints
+      // handle that during analysis, but we can keep localStorage in sync
+      localStorage.setItem('detection-history', JSON.stringify(history));
+    } else if (!isSignedIn && history.length > 0) {
+      console.log("Saving history to localStorage for guest user");
+      localStorage.setItem('detection-history', JSON.stringify(history));
+    }
+    
+    // Always update window object for export functions
+    window.historyData = history;
+  }, [history, isSignedIn, isLoaded, user]);
+  
+  // Initialize global history refresh function for use across components
+  useEffect(() => {
+    // Expose a global function to refresh history
+    window.refreshHistory = (historyData) => {
+      console.log(`Refreshing global history with ${historyData?.length || 0} items`)
+      if (Array.isArray(historyData)) {
+        setHistory(historyData)
+        window.historyData = historyData
+      }
+    }
+    
+    return () => {
+      // Clean up on unmount
+      delete window.refreshHistory
+    }
+  }, [])
   
   // Check API status on mount
   useEffect(() => {
@@ -77,21 +318,53 @@ function App() {
   
   // Add a prediction to history
   const addToHistory = (prediction) => {
+    // Check for null or undefined prediction
+    if (!prediction) {
+      console.error("Attempted to add null/undefined prediction to history");
+      return;
+    }
+
+    // Ensure prediction has a timestamp
+    const predictionWithTime = {
+      ...prediction,
+      timestamp: prediction.timestamp || new Date().toISOString()
+    };
+    
+    // Add to frontend state
     setHistory(prev => {
-      // Add timestamp to prediction
-      const predictionWithTime = {
-        ...prediction,
-        timestamp: new Date().toISOString()
-      }
       // Keep maximum 100 items, add new ones at the beginning
-      return [predictionWithTime, ...prev].slice(0, 100)
-    })
+      return [predictionWithTime, ...prev].slice(0, 100);
+    });
+    
+    // Also add to window.historyData for export functions
+    window.historyData = [predictionWithTime, ...(window.historyData || [])].slice(0, 100);
+    
+    // Also save to localStorage as backup (this will be our fallback)
+    try {
+      const savedHistory = JSON.parse(localStorage.getItem('detection-history') || '[]');
+      const newHistory = [predictionWithTime, ...savedHistory].slice(0, 100);
+      localStorage.setItem('detection-history', JSON.stringify(newHistory));
+      
+      // Also save user-specific history if signed in
+      if (isSignedIn && user) {
+        localStorage.setItem(`detection-history-${user.id}`, JSON.stringify(newHistory));
+      }
+    } catch (error) {
+      console.error('Error saving to localStorage:', error);
+    }
   }
   
   // Clear history
-  const clearHistory = () => {
+  const clearHistory = async () => {
     if (confirm('Are you sure you want to clear all prediction history?')) {
       setHistory([])
+      window.historyData = []
+      
+      // For signed in users, we'd ideally have an API endpoint to clear history
+      if (!isSignedIn) {
+        localStorage.removeItem('detection-history')
+      }
+      
       toast.info('Prediction history cleared')
     }
   }
@@ -194,12 +467,21 @@ function App() {
             
             <main className="flex-1 overflow-x-hidden overflow-y-auto bg-slate-900 text-white">
               <Routes>
-                <Route path="/" element={<Dashboard apiStatus={apiStatus} addToHistory={addToHistory} />} />
+                <Route path="/" element={
+                  <Dashboard 
+                    apiStatus={apiStatus} 
+                    addToHistory={addToHistory} 
+                    userStats={userStats} 
+                    userCategories={userCategories}
+                  />
+                } />
                 <Route path="/batch" element={<BatchAnalysis apiStatus={apiStatus} addToHistory={addToHistory} />} />
-                <Route path="/history" element={<History history={history} />} />
+                <Route path="/history" element={<History history={history} clearHistory={clearHistory} />} />
                 <Route path="/cases" element={<CaseManagement />} />
                 <Route path="/threat-map" element={<ThreatMap />} />
                 <Route path="/settings" element={<Settings />} />
+                <Route path="/social-media/search" element={<TwitterSearch addToHistory={addToHistory} />} />
+                <Route path="/social-media/threats" element={<TwitterThreats />} />
               </Routes>
             </main>
           </div>
@@ -208,7 +490,7 @@ function App() {
       
       <ToastContainer
         position="bottom-right"
-        autoClose={5000}
+        autoClose={3000}
         hideProgressBar={false}
         newestOnTop
         closeOnClick

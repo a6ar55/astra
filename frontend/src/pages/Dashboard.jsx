@@ -1,8 +1,11 @@
-import { useState, useEffect } from 'react'
+import { useState, useEffect, useCallback } from 'react'
 import axios from 'axios'
 import { toast } from 'react-toastify'
 import ThreatChart from '../components/ThreatChart'
+import ThreatClassificationView from '../components/ThreatClassificationView'
 import { useUser } from '@clerk/clerk-react'
+import { exportAsCSV, prepareThreatDataForExport, exportAsJson } from '../utils/exportUtils'
+import { generateThreatReport, generateSummaryReport } from '../utils/reportUtils'
 import { 
   FaShieldAlt, 
   FaExclamationTriangle, 
@@ -21,15 +24,16 @@ import {
 } from 'react-icons/fa'
 import { motion, AnimatePresence } from 'framer-motion'
 
-const Dashboard = ({ apiStatus, addToHistory }) => {
-  const { user } = useUser()
-  const userId = user?.id || 'anonymous'
+const Dashboard = ({ apiStatus, addToHistory, userStats, userCategories }) => {
+  const { user, isLoaded: userLoaded, isSignedIn } = useUser()
+  const [loading, setLoading] = useState(false)
+  const [dataLoading, setDataLoading] = useState(true)
+  const [userId, setUserId] = useState(null)
   
   const [text, setText] = useState('')
   const [result, setResult] = useState(null)
-  const [loading, setLoading] = useState(false)
   
-  // Initialize with empty values for a new user
+  // Use userStats from props if available, otherwise use local state as fallback
   const [threatStats, setThreatStats] = useState({
     totalAnalyzed: 0,
     threatsDetected: 0,
@@ -39,6 +43,7 @@ const Dashboard = ({ apiStatus, addToHistory }) => {
     lastUpdated: 'Never'
   })
   
+  // Use userCategories from props if available, otherwise use local state as fallback
   const [threatCategories, setThreatCategories] = useState([
     { category: 'Hate Speech/Extremism', count: 0, trend: 'neutral', percentage: 0 },
     { category: 'Direct Violence Threats', count: 0, trend: 'neutral', percentage: 0 },
@@ -47,121 +52,286 @@ const Dashboard = ({ apiStatus, addToHistory }) => {
     { category: 'Child Safety Threats', count: 0, trend: 'neutral', percentage: 0 }
   ])
   
-  // Load user-specific stats from localStorage on component mount
+  const [history, setHistory] = useState([])
+  const [summaryReport, setSummaryReport] = useState(null)
+  const [threatReport, setThreatReport] = useState(null)
+  
+  // Add this effect to set the user ID when the user is loaded
   useEffect(() => {
-    if (!userId) return;
-    
-    const savedStats = localStorage.getItem(`threat-stats-${userId}`);
-    const savedCategories = localStorage.getItem(`threat-categories-${userId}`);
-    
-    if (savedStats) {
-      try {
-        setThreatStats(JSON.parse(savedStats));
-      } catch (error) {
-        console.error('Failed to parse saved stats:', error);
-      }
+    if (userLoaded && isSignedIn && user) {
+      setUserId(user.id)
+      // Set user ID in axios headers for all requests
+      axios.defaults.headers.common['user_id'] = user.id
     }
-    
-    if (savedCategories) {
-      try {
-        setThreatCategories(JSON.parse(savedCategories));
-      } catch (error) {
-        console.error('Failed to parse saved categories:', error);
-      }
-    }
-  }, [userId]);
+  }, [userLoaded, isSignedIn, user])
 
-  // Save stats to localStorage whenever they change
+  // Update the useEffect that handles props to ensure it waits for data
+  useEffect(() => {
+    if (userStats) {
+      console.log("Using provided user stats:", userStats)
+      setThreatStats(userStats)
+      setDataLoading(false)
+    }
+    
+    if (userCategories) {
+      console.log("Using provided user categories:", userCategories)
+      setThreatCategories(userCategories)
+    }
+  }, [userStats, userCategories])
+
+  // Load user-specific stats from localStorage on component mount as fallback
+  useEffect(() => {
+    // Only use localStorage if we don't have API data
+    if (!userStats && !userCategories) {
+      if (!userId) return;
+      
+      console.log("No API data, falling back to localStorage");
+      
+      const savedStats = localStorage.getItem(`threat-stats-${userId}`);
+      const savedCategories = localStorage.getItem(`threat-categories-${userId}`);
+      
+      if (savedStats) {
+        try {
+          const parsedStats = JSON.parse(savedStats);
+          console.log("Using localStorage stats:", parsedStats);
+          setThreatStats(parsedStats);
+        } catch (error) {
+          console.error('Failed to parse saved stats:', error);
+        }
+      }
+      
+      if (savedCategories) {
+        try {
+          const parsedCategories = JSON.parse(savedCategories);
+          console.log("Using localStorage categories:", parsedCategories);
+          setThreatCategories(parsedCategories);
+        } catch (error) {
+          console.error('Failed to parse saved categories:', error);
+        }
+      }
+    }
+  }, [userId, userStats, userCategories]);
+
+  // Save stats to localStorage whenever they change (as fallback)
   useEffect(() => {
     if (!userId) return;
     
-    localStorage.setItem(`threat-stats-${userId}`, JSON.stringify(threatStats));
-  }, [threatStats, userId]);
+    // Only save to localStorage if not using API data
+    if (!userStats) {
+      localStorage.setItem(`threat-stats-${userId}`, JSON.stringify(threatStats));
+    }
+  }, [threatStats, userId, userStats]);
   
   useEffect(() => {
     if (!userId) return;
     
-    localStorage.setItem(`threat-categories-${userId}`, JSON.stringify(threatCategories));
-  }, [threatCategories, userId]);
+    // Only save to localStorage if not using API data
+    if (!userCategories) {
+      localStorage.setItem(`threat-categories-${userId}`, JSON.stringify(threatCategories));
+    }
+  }, [threatCategories, userId, userCategories]);
 
+  // Update the polling effect to use the userId directly
+  useEffect(() => {
+    // Skip if no user ID
+    if (!userId) return
+    
+    console.log("Setting up stats polling mechanism with userId:", userId)
+    
+    // Initial fetch (important to get data on first load)
+    fetchLatestStats()
+    
+    // Function to fetch the latest stats
+    async function fetchLatestStats() {
+      try {
+        console.log("Polling for latest stats with userId:", userId)
+        const response = await axios.get(`/api/user/stats?user_id=${userId}`, {
+          headers: { 'user_id': userId }
+        })
+        
+        if (response.data) {
+          console.log("Received updated stats from polling:", response.data)
+          setThreatStats(response.data.stats)
+          setThreatCategories(response.data.categories)
+          setDataLoading(false)
+        }
+      } catch (error) {
+        console.error("Error polling for stats:", error)
+      }
+    }
+    
+    // Set up polling interval
+    const interval = setInterval(fetchLatestStats, 30000)
+    return () => clearInterval(interval)
+  }, [userId])
+
+  // Fetch analysis history on mount and after each analysis
+  useEffect(() => {
+    if (!userId) return
+    const fetchHistory = async () => {
+      try {
+        console.log("Fetching user history from API with userId:", userId)
+        const res = await axios.get('/api/user/history', { 
+          headers: { 'user_id': userId }
+        })
+        
+        if (res.data && Array.isArray(res.data)) {
+          console.log(`Fetched ${res.data.length} history items from API:`, res.data)
+          
+          // Ensure data has all required fields for visualization
+          const processedData = res.data.map(item => {
+            // Check if the item has probabilities needed for the threat chart
+            if (!item.probabilities || Object.keys(item.probabilities).length === 0) {
+              console.warn(`History item ${item.id} missing probabilities, adding default values`)
+              // Add default probabilities based on predicted_class
+              const defaultProbs = {
+                "Direct Violence Threats": 0.05,
+                "Criminal Activity": 0.05,
+                "Harassment and Intimidation": 0.05,
+                "Hate Speech/Extremism": 0.05,
+                "Child Safety Threats": 0.05,
+                "Non-threat/Neutral": 0.75
+              }
+              
+              // If there's a predicted class, boost its probability
+              if (item.predicted_class && item.predicted_class in defaultProbs) {
+                defaultProbs[item.predicted_class] = item.confidence || 0.8
+                // Normalize the rest
+                const remaining = 1 - defaultProbs[item.predicted_class]
+                const others = Object.keys(defaultProbs).filter(k => k !== item.predicted_class)
+                others.forEach(key => {
+                  defaultProbs[key] = remaining / others.length
+                })
+              }
+              
+              item.probabilities = defaultProbs
+            }
+            
+            return item
+          })
+          
+          setHistory(processedData)
+          // Also update global history data for export
+          window.historyData = processedData
+          // Also save as backup to localStorage
+          localStorage.setItem(`detection-history-${userId}`, JSON.stringify(processedData))
+        } else {
+          console.warn("API returned empty or invalid history data:", res.data)
+        }
+      } catch (e) {
+        console.error("Error fetching history:", e)
+        console.error("Error details:", e.response?.data || e.message)
+        
+        // fallback to localStorage
+        const local = localStorage.getItem(`detection-history-${userId}`)
+        if (local) {
+          try {
+            console.log("Falling back to localStorage for history")
+            const parsed = JSON.parse(local)
+            setHistory(parsed)
+            window.historyData = parsed
+          } catch (err) {
+            console.error("Error parsing local history:", err)
+          }
+        }
+      }
+    }
+    fetchHistory()
+  }, [userId, result]) // refetch after each analysis
+
+  // Fetch summary and threat reports
+  useEffect(() => {
+    if (!userId) return
+    const fetchReports = async () => {
+      try {
+        const summary = await axios.get(`/api/user/reports/summary`, { headers: { 'user_id': userId } })
+        setSummaryReport(summary.data?.report || null)
+      } catch {}
+      try {
+        const threat = await axios.get(`/api/user/reports/threat`, { headers: { 'user_id': userId } })
+        setThreatReport(threat.data?.report || null)
+      } catch {}
+    }
+    fetchReports()
+  }, [userId])
+
+  // Update the handleSubmit function to properly update metrics
   const handleSubmit = async (e) => {
     e.preventDefault()
     if (!text || loading || apiStatus !== 'online') return
-
+    
     setLoading(true)
     try {
-      const response = await axios.post('/api/predict', { text })
+      // Log user info for debugging
+      console.log("Current user ID for submission:", userId)
       
-      if (response.data) {
-        const result = {
-          text,
-          result: response.data,
-          timestamp: new Date().toISOString()
-        }
-        
-        setResult(result)
-        
-        // Add to history
-        addToHistory(result)
-        
-        // Update user stats
-        const newStats = { ...threatStats }
-        newStats.totalAnalyzed += 1
-        
-        if (response.data.threat) {
-          newStats.threatsDetected += 1
-          
-          if (getThreatSeverity(response.data.predicted_class, response.data.confidence) === 'high' || 
-              getThreatSeverity(response.data.predicted_class, response.data.confidence) === 'critical') {
-            newStats.highSeverity += 1
-          }
-          
-          // Update average confidence
-          newStats.averageConfidence = ((newStats.averageConfidence * (newStats.threatsDetected - 1)) + 
-                                       (response.data.confidence * 100)) / newStats.threatsDetected
-          
-          // Round to 1 decimal place
-          newStats.averageConfidence = Math.round(newStats.averageConfidence * 10) / 10
-        }
-        
-        // Update last updated
-        newStats.lastUpdated = 'Just now'
-        
-        // Update recent change (simulate some activity)
-        newStats.recentChange = Math.round((Math.random() * 5 + 1) * 10) / 10
-        
-        setThreatStats(newStats)
-        
-        // Update categories
-        if (response.data.threat && response.data.predicted_class) {
-          const newCategories = [...threatCategories]
-          const categoryIndex = newCategories.findIndex(c => 
-            c.category.toLowerCase().includes(response.data.predicted_class.toLowerCase()) ||
-            response.data.predicted_class.toLowerCase().includes(c.category.toLowerCase())
-          )
-          
-          if (categoryIndex !== -1) {
-            newCategories[categoryIndex].count += 1
-            
-            // Recalculate percentages
-            const totalThreats = newCategories.reduce((acc, curr) => acc + curr.count, 0)
-            
-            newCategories.forEach((cat, i) => {
-              cat.percentage = totalThreats > 0 ? Math.round(cat.count / totalThreats * 1000) / 10 : 0
-              
-              // Randomly set trend for demonstration
-              cat.trend = i === categoryIndex ? 'up' : Math.random() > 0.5 ? 'neutral' : 'down'
-            })
-            
-            setThreatCategories(newCategories)
-          }
-        }
-        
-        toast.success('Analysis completed successfully')
+      // Add user_id to the headers if available
+      const headers = {}
+      if (userId) {
+        headers.user_id = userId
+        console.log("Setting user_id header for prediction:", userId)
       }
+      
+      console.log("Sending request to /api/predict with headers:", headers)
+      const response = await axios.post('/api/predict', { text }, { headers })
+      
+      console.log("Received response from prediction:", response.data)
+      
+      // Update the UI with the response
+      setResult(response.data)
+      
+      // Call the addToHistory prop to update global state
+      if (addToHistory) {
+      addToHistory(response.data)
+      }
+      
+      // After successful analysis, immediately fetch the latest stats and history
+      if (userId) {
+        try {
+          console.log("Fetching latest data after prediction")
+          // Add a small delay to ensure Firebase has time to update
+          setTimeout(async () => {
+            try {
+              // Fetch updated stats
+              const statsResponse = await axios.get('/api/user/stats', {
+                headers: { 'user_id': userId }
+              })
+              
+              if (statsResponse.data) {
+                console.log("Updated stats after prediction:", statsResponse.data)
+                setThreatStats(statsResponse.data.stats)
+                setThreatCategories(statsResponse.data.categories)
+                
+                // Also update localStorage
+                localStorage.setItem(`threat-stats-${userId}`, JSON.stringify(statsResponse.data.stats))
+                localStorage.setItem(`threat-categories-${userId}`, JSON.stringify(statsResponse.data.categories))
+              }
+              
+              // Fetch updated history
+              const historyResponse = await axios.get('/api/user/history', {
+                headers: { 'user_id': userId }
+              })
+              
+              if (historyResponse.data && Array.isArray(historyResponse.data)) {
+                console.log(`Fetched ${historyResponse.data.length} updated history items from API`)
+                setHistory(historyResponse.data)
+                // Also update global history data for export
+                window.historyData = historyResponse.data
+                // Also save as backup to localStorage
+                localStorage.setItem(`detection-history-${userId}`, JSON.stringify(historyResponse.data))
+              }
+            } catch (error) {
+              console.error("Error fetching updated data:", error)
+            }
+          }, 1000) // Use a longer delay to ensure Firebase has updated
+        } catch (error) {
+          console.error("Error setting up data refresh:", error)
+        }
+      }
+      
     } catch (error) {
-      console.error('Analysis error:', error)
-      toast.error(error.response?.data?.error || 'Failed to analyze text')
+      console.error('Prediction error:', error)
+      toast.error('Failed to analyze text. Please try again.')
     } finally {
       setLoading(false)
     }
@@ -271,6 +441,163 @@ const Dashboard = ({ apiStatus, addToHistory }) => {
     }
   }
 
+  // Add these functions to handle export and report generation
+  const handleExportData = () => {
+    // If we have history data passed from parent (App.jsx), use it
+    // Otherwise use a placeholder message
+    if (window.historyData && window.historyData.length > 0) {
+      // Prepare data for export
+      const exportData = prepareThreatDataForExport(window.historyData);
+      
+      // Show a modal or dropdown for export options
+      const exportType = window.confirm('Choose export format:\nOK for CSV, Cancel for JSON') ? 'csv' : 'json';
+      
+      if (exportType === 'csv') {
+        exportAsCSV(exportData, 'astra-threat-data');
+        toast.success('Data exported as CSV successfully');
+      } else {
+        exportAsJson(window.historyData, 'astra-threat-data');
+        toast.success('Data exported as JSON successfully');
+      }
+    } else {
+      toast.info('No threat analysis data available to export');
+    }
+  };
+  
+  const handleGenerateReport = async () => {
+    const reportType = window.confirm('Choose report type:\nOK for Summary Report, Cancel for Full Threat Report') ? 'summary' : 'full';
+    const userInfo = {
+      name: user ? `${user.firstName || ''} ${user.lastName || ''}`.trim() : 'Guest User',
+      email: user?.emailAddresses?.[0]?.emailAddress || 'N/A'
+    };
+    if (reportType === 'summary') {
+      const report = generateSummaryReport(threatStats, threatCategories, userInfo, true) // true = return as object
+      setSummaryReport(report)
+      try {
+        await axios.post('/api/user/reports/summary', report, { headers: { 'user_id': userId } })
+        toast.success('Summary report generated and saved!')
+      } catch {
+        toast.error('Failed to save summary report')
+      }
+    } else {
+      if (window.historyData && window.historyData.length > 0) {
+        const report = generateThreatReport(window.historyData, userInfo, true)
+        setThreatReport(report)
+        try {
+          await axios.post('/api/user/reports/threat', report, { headers: { 'user_id': userId } })
+          toast.success('Threat report generated and saved!')
+        } catch {
+          toast.error('Failed to save threat report')
+        }
+      } else {
+        toast.info('No threat analysis data available for report generation')
+      }
+    }
+  };
+
+  // Update saveToLocalStorage to be more comprehensive
+  const saveToLocalStorage = (analysisResult) => {
+    if (!analysisResult) return;
+    
+    try {
+      // Save the current analysis to localStorage as a backup
+      const currentUserId = userId || 'anonymous';
+      
+      // Update and save history
+      const savedHistory = JSON.parse(localStorage.getItem('detection-history') || '[]');
+      const newHistory = [analysisResult, ...savedHistory].slice(0, 100); // Keep max 100 items
+      localStorage.setItem('detection-history', JSON.stringify(newHistory));
+      
+      // Update and save stats
+      let stats = JSON.parse(localStorage.getItem(`threat-stats-${currentUserId}`) || JSON.stringify({
+        totalAnalyzed: 0,
+        threatsDetected: 0, 
+        highSeverity: 0,
+        averageConfidence: 0,
+        recentChange: 0,
+        lastUpdated: 'Never'
+      }));
+      
+      // Update stats based on the analysis result
+      stats.totalAnalyzed++;
+      stats.lastUpdated = 'Just now';
+      
+      if (analysisResult.threat) {
+        stats.threatsDetected++;
+        
+        // Calculate severity
+        const severity = getThreatSeverity(analysisResult.predicted_class, analysisResult.confidence);
+        if (severity === 'high' || severity === 'critical') {
+          stats.highSeverity++;
+        }
+        
+        // Update average confidence
+        const oldTotal = stats.threatsDetected > 1 ? 
+          (stats.averageConfidence * (stats.threatsDetected - 1)) : 0;
+        const newTotal = oldTotal + (analysisResult.confidence * 100);
+        stats.averageConfidence = newTotal / stats.threatsDetected;
+        stats.averageConfidence = Math.round(stats.averageConfidence * 10) / 10; // Round to 1 decimal
+      }
+      
+      // Add some random change for visual effect
+      stats.recentChange = Math.round((Math.random() * 5 + 1) * 10) / 10;
+      
+      // Save updated stats
+      localStorage.setItem(`threat-stats-${currentUserId}`, JSON.stringify(stats));
+      
+      // If not using the API data, update the stats state directly
+      if (!userId) {
+        setThreatStats(stats);
+      }
+      
+      // Update categories if it's a threat
+      if (analysisResult.threat && analysisResult.predicted_class) {
+        let categories = JSON.parse(localStorage.getItem(`threat-categories-${currentUserId}`) || '[]');
+        
+        // If no categories, create default ones
+        if (!categories.length) {
+          categories = [
+            {category: "Hate Speech/Extremism", count: 0, trend: "neutral", percentage: 0},
+            {category: "Direct Violence Threats", count: 0, trend: "neutral", percentage: 0},
+            {category: "Harassment and Intimidation", count: 0, trend: "neutral", percentage: 0},
+            {category: "Criminal Activity", count: 0, trend: "neutral", percentage: 0},
+            {category: "Child Safety Threats", count: 0, trend: "neutral", percentage: 0}
+          ];
+        }
+        
+        // Find matching category
+        const categoryIndex = categories.findIndex(c => 
+          c.category.toLowerCase().includes(analysisResult.predicted_class.toLowerCase()) ||
+          analysisResult.predicted_class.toLowerCase().includes(c.category.toLowerCase())
+        );
+        
+        if (categoryIndex !== -1) {
+          categories[categoryIndex].count++;
+          categories[categoryIndex].trend = 'up';
+          
+          // Recalculate percentages
+          const totalThreats = categories.reduce((acc, curr) => acc + curr.count, 0);
+          categories.forEach((cat, i) => {
+            cat.percentage = totalThreats > 0 ? Math.round(cat.count / totalThreats * 1000) / 10 : 0;
+            cat.trend = i === categoryIndex ? 'up' : Math.random() > 0.5 ? 'neutral' : 'down';
+          });
+          
+          // Save updated categories
+          localStorage.setItem(`threat-categories-${currentUserId}`, JSON.stringify(categories));
+          
+          // If not using the API data, update the categories state directly
+          if (!userId) {
+            setThreatCategories(categories);
+          }
+        }
+      }
+      
+      console.log('Saved analysis results to localStorage');
+    } catch (error) {
+      console.error('Error saving to localStorage:', error);
+    }
+  };
+
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
       {/* Dashboard Header with Stats */}
@@ -283,17 +610,24 @@ const Dashboard = ({ apiStatus, addToHistory }) => {
         <div className="flex flex-wrap items-center justify-between mb-4">
           <h1 className="text-2xl font-bold text-white mb-1">Threat Intelligence Dashboard</h1>
           <div className="flex items-center space-x-2">
-            <span className="text-sm text-slate-400">Last updated: {threatStats.lastUpdated}</span>
-            <button className="btn btn-sm btn-primary">
+            <span className="text-sm text-slate-400">Last updated: {dataLoading ? "Loading..." : (threatStats?.lastUpdated || "Never")}</span>
+            <button 
+              className="btn btn-sm btn-primary"
+              onClick={() => handleExportData()}
+            >
               <FaDatabase className="mr-1.5" /> Export Data
             </button>
-            <button className="btn btn-sm btn-secondary">
+            <button 
+              className="btn btn-sm btn-secondary"
+              onClick={() => handleGenerateReport()}
+            >
               <FaRegFilePdf className="mr-1.5" /> Generate Report
             </button>
           </div>
         </div>
         <p className="text-slate-400 max-w-3xl">
-          {getWelcomeMessage()} The advanced AI-powered system detects and classifies threats with high precision, providing actionable intelligence.
+          {userId ? `Welcome, ${user?.firstName || 'User'}! ` : 'Welcome! '}
+          Your personal threat intelligence dashboard. The advanced AI-powered system detects and classifies threats with high precision, providing actionable intelligence.
         </p>
       </motion.div>
       
@@ -304,6 +638,15 @@ const Dashboard = ({ apiStatus, addToHistory }) => {
         initial="hidden"
         animate="show"
       >
+        {dataLoading ? (
+          // Show loading skeleton for stats when loading
+          Array(4).fill(0).map((_, index) => (
+            <motion.div key={index} variants={item} className="card bg-gradient-to-br from-slate-800 to-slate-900 border-t border-slate-700 shadow-xl p-4">
+              <div className="animate-pulse h-16"></div>
+            </motion.div>
+          ))
+        ) : (
+          <>
         <motion.div variants={item} className="card bg-gradient-to-br from-slate-800 to-slate-900 border-t border-slate-700 shadow-xl">
           <div className="flex items-start justify-between">
             <div>
@@ -315,11 +658,11 @@ const Dashboard = ({ apiStatus, addToHistory }) => {
             </div>
           </div>
           <div className="mt-2 text-xs text-slate-400">
-            {threatStats.recentChange > 0 ? (
-              <span className="text-green-400">+{threatStats.recentChange}%</span>
-            ) : (
-              <span>No recent activity</span>
-            )}
+                {threatStats.recentChange > 0 ? (
+                  <span className="text-green-400">+{threatStats.recentChange}%</span>
+                ) : (
+                  <span>No recent activity</span>
+                )}
           </div>
         </motion.div>
         
@@ -334,11 +677,11 @@ const Dashboard = ({ apiStatus, addToHistory }) => {
             </div>
           </div>
           <div className="mt-2 text-xs text-slate-400">
-            {threatStats.totalAnalyzed > 0 ? (
-              <span className="text-red-400">{Math.round(threatStats.threatsDetected/threatStats.totalAnalyzed*100)}%</span>
-            ) : (
-              <span>0%</span>
-            )} of total content
+                {threatStats.totalAnalyzed > 0 ? (
+                  <span className="text-red-400">{Math.round(threatStats.threatsDetected/threatStats.totalAnalyzed*100)}%</span>
+                ) : (
+                  <span>0%</span>
+                )} of total content
           </div>
         </motion.div>
         
@@ -353,11 +696,11 @@ const Dashboard = ({ apiStatus, addToHistory }) => {
             </div>
           </div>
           <div className="mt-2 text-xs text-slate-400">
-            {threatStats.threatsDetected > 0 ? (
-              <span className="text-amber-400">{Math.round(threatStats.highSeverity/threatStats.threatsDetected*100)}%</span>
-            ) : (
-              <span>0%</span>
-            )} of threats
+                {threatStats.threatsDetected > 0 ? (
+                  <span className="text-amber-400">{Math.round(threatStats.highSeverity/threatStats.threatsDetected*100)}%</span>
+                ) : (
+                  <span>0%</span>
+                )} of threats
           </div>
         </motion.div>
         
@@ -365,20 +708,22 @@ const Dashboard = ({ apiStatus, addToHistory }) => {
           <div className="flex items-start justify-between">
             <div>
               <p className="text-slate-400 text-sm font-medium">Avg Confidence</p>
-              <h3 className="text-2xl font-bold mt-1 text-white">{threatStats.averageConfidence > 0 ? `${threatStats.averageConfidence.toFixed(1)}%` : "N/A"}</h3>
+                  <h3 className="text-2xl font-bold mt-1 text-white">{threatStats.averageConfidence > 0 ? `${threatStats.averageConfidence.toFixed(1)}%` : "N/A"}</h3>
             </div>
             <div className="p-2 rounded-md bg-emerald-500/20 text-emerald-400">
               <FaClipboardCheck size={18} />
             </div>
           </div>
           <div className="mt-2 text-xs text-slate-400">
-            {threatStats.averageConfidence > 0 ? (
-              <span className="text-emerald-400">High precision</span>
-            ) : (
-              <span>No data yet</span>
-            )}
+                {threatStats.averageConfidence > 0 ? (
+                  <span className="text-emerald-400">High precision</span>
+                ) : (
+                  <span>No data yet</span>
+                )}
           </div>
         </motion.div>
+          </>
+        )}
       </motion.div>
       
       {/* Threat Categories */}
@@ -538,75 +883,47 @@ const Dashboard = ({ apiStatus, addToHistory }) => {
                 </div>
                 
                 <div className="flex items-center mb-6">
-                  <div className={`h-4 w-4 rounded-full mr-3 ${result.result.threat ? 'bg-red-500' : 'bg-green-500'}`}></div>
-                  <span className={`font-semibold text-lg ${result.result.threat ? 'text-red-400' : 'text-green-400'}`}>
-                    {result.result.threat ? 'Threat Detected' : 'No Threat Detected'}
+                  <div className={`h-4 w-4 rounded-full mr-3 ${result.threat ? 'bg-red-500' : 'bg-green-500'}`}></div>
+                  <span className={`font-semibold text-lg ${result.threat ? 'text-red-400' : 'text-green-400'}`}>
+                    {result.threat ? 'Threat Detected' : 'No Threat Detected'}
                   </span>
                 </div>
                 
-                {result.result.threat && (
+                {/* Two-Stage Threat Classification View */}
+                <div className="mb-4">
+                  <ThreatClassificationView result={result} />
+                </div>
+                
+                {result.threat && (
                   <>
-                    <div className="mb-4">
-                      <div className="text-sm text-slate-400 mb-1">Threat Classification</div>
-                      <div className="font-medium text-white">{result.result.predicted_class}</div>
-                    </div>
-                    
-                    <div className="mb-4">
-                      <div className="text-sm text-slate-400 mb-1">Confidence Score</div>
-                      <div className="flex items-center">
-                        <div className="flex-grow h-2 bg-slate-700 rounded-full overflow-hidden">
-                          <div 
-                            className={`h-full ${
-                              result.result.confidence * 100 > 90 ? 'bg-red-500' : 
-                              result.result.confidence * 100 > 70 ? 'bg-orange-500' : 
-                              'bg-yellow-500'
-                            }`}
-                            style={{ width: `${result.result.confidence * 100}%` }}
-                          />
-                        </div>
-                        <span className="text-white font-medium ml-2">{(result.result.confidence * 100).toFixed(1)}%</span>
-                      </div>
-                    </div>
-                    
-                    {/* Threat Classification Chart */}
-                    <div className="mb-4">
-                      <div className="text-sm text-slate-400 mb-2">Threat Classification Analysis</div>
-                      <div className="mt-2" style={{ minHeight: '350px' }}>
-                        <ThreatChart 
-                          probabilities={result.result.probabilities} 
-                          visualizationData={result.result.visualization_data}
-                        />
-                      </div>
-                    </div>
-                    
                     <div className="mb-4">
                       <div className="text-sm text-slate-400 mb-1">Severity</div>
                       <div className="inline-flex items-center px-2.5 py-1 rounded-full text-xs font-medium bg-opacity-20" 
-                        style={{ backgroundColor: `${getSeverityColor(getThreatSeverity(result.result.predicted_class, result.result.confidence))}40` }}>
-                        <span className={getSeverityColor(getThreatSeverity(result.result.predicted_class, result.result.confidence)).replace('bg-', 'text-')}>
-                          {getThreatSeverity(result.result.predicted_class, result.result.confidence).toUpperCase()}
+                        style={{ backgroundColor: `${getSeverityColor(getThreatSeverity(result.predicted_class, result.confidence))}40` }}>
+                        <span className={getSeverityColor(getThreatSeverity(result.predicted_class, result.confidence)).replace('bg-', 'text-')}>
+                          {getThreatSeverity(result.predicted_class, result.confidence).toUpperCase()}
                         </span>
                       </div>
-                    </div>
+                          </div>
                     
                     <div>
                       <div className="text-sm text-slate-400 mb-2">Recommended Actions</div>
                       <ul className="space-y-1">
-                        {getRecommendedActions(result.result.predicted_class, result.result.confidence).map((action, i) => (
+                        {getRecommendedActions(result.predicted_class, result.confidence).map((action, i) => (
                           <li key={i} className="flex items-center text-xs text-slate-300">
                             <FaFlag className="text-amber-500 mr-2" size={10} />
                             <span>{action}</span>
-                          </li>
-                        ))}
-                      </ul>
-                    </div>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
                   </>
                 )}
                 
-                {!result.result.threat && (
+                {!result.threat && (
                   <div className="text-slate-300">
                     The content was analyzed and no threats were detected.
-                  </div>
+                </div>
                 )}
               </motion.div>
             ) : (

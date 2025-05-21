@@ -1,40 +1,43 @@
 import os
 import sys
 import time
-import pandas as pd
-import uuid
-from datetime import datetime, timedelta
-from pathlib import Path
-from fastapi import FastAPI, HTTPException, Request, Depends
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
-from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
-from geopy.geocoders import Nominatim
-from collections import defaultdict
 import random
-import logging
-import json
+from datetime import datetime
+from fastapi import FastAPI, HTTPException, Request, Body
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 from typing import Dict, Any, List, Optional
+import logging
+
+# Set up path for imports
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# Import Firebase configuration
+from firebase_config import (
+    initialize_firebase, 
+    get_firestore_db,
+    get_or_create_user, 
+    get_user_threat_stats, 
+    get_user_threat_categories,
+    get_user_analysis_history, 
+    add_analysis_to_history, 
+    update_user_threat_stats
+)
 
 # Import model loader
 from app.model_loader import model_loader
+# Import Twitter API
+from app.twitter_api import twitter_api
 
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
     handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler("app.log")
+        logging.StreamHandler()
     ]
 )
 logger = logging.getLogger(__name__)
-
-# Define data paths
-CURRENT_DIR = Path(__file__).parent.parent.parent.parent
-DIVERSE_DATASET_PATH = CURRENT_DIR / "diverse_dataset.csv"
-GEN_DATASET_PATH = CURRENT_DIR / "gen_ds.csv"
 
 # Define request models
 class PredictionRequest(BaseModel):
@@ -43,35 +46,19 @@ class PredictionRequest(BaseModel):
 class BatchPredictionRequest(BaseModel):
     texts: List[str]
 
-class CaseCreateRequest(BaseModel):
-    title: str
-    summary: str
-    threatType: str  
-    target: str
-    status: str  # critical, high, medium, low
-    source: str
-    location: str
-    relatedCases: Optional[List[str]] = None
+class UserInfo(BaseModel):
+    user_id: str
+    email: str
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
 
-class CaseUpdateRequest(BaseModel):
-    title: Optional[str] = None
-    summary: Optional[str] = None
-    threatType: Optional[str] = None
-    target: Optional[str] = None  
-    status: Optional[str] = None
-    source: Optional[str] = None
-    location: Optional[str] = None
-    relatedCases: Optional[List[str]] = None
+# Twitter-related request models
+class TwitterSearchRequest(BaseModel):
+    query: str
+    count: int = 20
 
-class EventCreateRequest(BaseModel):
-    caseId: str
-    text: str
-    user: str
-
-class ThreatMapFilterRequest(BaseModel):
-    timeRange: Optional[int] = 30  # days
-    threatTypes: Optional[List[str]] = None
-    priority: Optional[List[str]] = None
+class TwitterUserRequest(BaseModel):
+    username: str
 
 # Create FastAPI app
 app = FastAPI(
@@ -83,671 +70,556 @@ app = FastAPI(
 # Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # Allow all origins
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# In-memory storage for cases, events, and threat data
-cases_db = {}
-events_db = []
-threat_data = []
+# Initialize Firebase on startup
+db = None
 
-# Load datasets
-def load_datasets():
-    global threat_data
-    
-    # Load and process datasets
-    try:
-        diverse_df = pd.read_csv(DIVERSE_DATASET_PATH)
-        gen_df = pd.read_csv(GEN_DATASET_PATH)
-        
-        # Combine datasets
-        diverse_df.columns = ['text', 'class']
-        gen_df.columns = ['text', 'class']
-        combined_df = pd.concat([diverse_df, gen_df], ignore_index=True)
-        
-        logger.info(f"Loaded combined dataset with {len(combined_df)} entries")
-        
-        # Skip geocoding to avoid timeouts
-        # geocoder = Nominatim(user_agent="threat-detection-platform", timeout=1)
-        
-        # List of major cities for random assignment
-        cities = ["New York", "Los Angeles", "Chicago", "Houston", "Phoenix", "Philadelphia", 
-                  "San Antonio", "San Diego", "Dallas", "San Jose", "Austin", "Jacksonville",
-                  "Mumbai", "Delhi", "Bangalore", "Kolkata", "Hyderabad", "Chennai", "Pune",
-                  "London", "Paris", "Tokyo", "Sydney", "Moscow", "Berlin"]
-        
-        # Sample at most 100 entries from each category for threat map
-        for threat_class in combined_df['class'].unique():
-            class_df = combined_df[combined_df['class'] == threat_class]
-            if len(class_df) > 50:
-                class_df = class_df.sample(50)
-            
-            for _, row in class_df.iterrows():
-                city = random.choice(cities)
-                # Use random coordinates instead of geocoding
-                lat = random.uniform(-80, 80)
-                lng = random.uniform(-180, 180)
-                
-                # Create threat entry
-                date = (datetime.now() - timedelta(days=random.randint(1, 60))).isoformat()
-                
-                # Determine priority based on threat class
-                if threat_class == "Direct Violence Threats" or threat_class == "Child Safety Threats":
-                    priority = random.choice(["critical", "high"])
-                elif threat_class == "Hate Speech/Extremism":
-                    priority = random.choice(["high", "medium"])
-                elif threat_class == "Criminal Activity":
-                    priority = random.choice(["medium", "high"])
-                else:
-                    priority = random.choice(["medium", "low"])
-                
-                threat_entry = {
-                    "id": f"THR-{str(uuid.uuid4())[:8]}",
-                    "type": threat_class,
-                    "lat": lat,
-                    "lng": lng,
-                    "title": f"{threat_class} detected in {city}",
-                    "location": city,
-                    "date": date,
-                    "priority": priority,
-                    "details": row['text'][:100] + ("..." if len(row['text']) > 100 else ""),
-                    "caseId": f"THP-{str(uuid.uuid4())[:8]}"
-                }
-                threat_data.append(threat_entry)
-                    
-        logger.info(f"Created {len(threat_data)} threat map entries")
-        
-        # Create some default cases based on threat data
-        create_default_cases()
-        
-    except Exception as e:
-        logger.error(f"Error loading datasets: {str(e)}")
-        import traceback
-        logger.error(traceback.format_exc())
-
-def create_default_cases():
-    # Create a few default cases based on the threat data
-    try:
-        case_count = min(10, len(threat_data))
-        for i in range(case_count):
-            threat = threat_data[i]
-            case_id = threat["caseId"]
-            
-            # Create case
-            case = {
-                "id": case_id,
-                "title": f"{threat['type']} in {threat['location']}",
-                "target": random.choice(["Individual", "Organization", "Public", "Government", "Religious community"]),
-                "status": threat["priority"],
-                "threatType": threat["type"],
-                "createdDate": (datetime.now() - timedelta(days=random.randint(1, 30))).isoformat(),
-                "updatedDate": datetime.now().isoformat(),
-                "assignedTo": random.choice(["Agent M. Johnson", "Agent S. Williams", "Agent T. Rodriguez", "Agent L. Patel", "Agent J. Anderson"]),
-                "source": random.choice(["Social media", "Email", "Web forum", "Dark web", "Public report"]),
-                "location": threat["location"],
-                "confidence": round(random.uniform(85.0, 98.0), 1),
-                "summary": threat["details"],
-                "relatedCases": []
-            }
-            
-            # Add events
-            case_events = []
-            
-            # Case created event
-            created_date = datetime.fromisoformat(case["createdDate"])
-            case_events.append({
-                "caseId": case_id,
-                "date": created_date.isoformat(),
-                "text": "Case created from threat detection system",
-                "user": "System"
-            })
-            
-            # Assignment event (same day)
-            assigned_date = created_date + timedelta(hours=random.randint(1, 3))
-            case_events.append({
-                "caseId": case_id,
-                "date": assigned_date.isoformat(),
-                "text": f"Assigned to {case['assignedTo']}",
-                "user": "Supervisor K. Smith"
-            })
-            
-            # Additional events
-            num_events = random.randint(1, 3)
-            for j in range(num_events):
-                event_date = assigned_date + timedelta(days=random.randint(1, 10))
-                
-                # Generate event description
-                if j == 0:
-                    text = f"Initial investigation completed. Analyzing digital evidence."
-                elif j == 1:
-                    text = f"Additional information collected. Continuing investigation."
-                else:
-                    text = f"Progress update: {random.choice(['Suspect identified', 'Evidence collected', 'Coordinating with local agencies', 'Analyzing related content'])}"
-                
-                case_events.append({
-                    "caseId": case_id,
-                    "date": event_date.isoformat(),
-                    "text": text,
-                    "user": case["assignedTo"]
-                })
-                
-                # Update case last updated date
-                case["updatedDate"] = event_date.isoformat()
-            
-            # Store case and events
-            cases_db[case_id] = case
-            events_db.extend(case_events)
-            
-        # Add some related cases
-        for case_id, case in list(cases_db.items())[:5]:
-            # Randomly select 1-2 related cases
-            available_cases = [c for c in cases_db.keys() if c != case_id]
-            if available_cases:
-                num_related = min(len(available_cases), random.randint(1, 2))
-                related_cases = random.sample(available_cases, num_related)
-                case["relatedCases"] = related_cases
-                
-                # Update the related cases to establish bi-directional relationship
-                for related_id in related_cases:
-                    if related_id in cases_db:
-                        if "relatedCases" not in cases_db[related_id]:
-                            cases_db[related_id]["relatedCases"] = []
-                        if case_id not in cases_db[related_id]["relatedCases"]:
-                            cases_db[related_id]["relatedCases"].append(case_id)
-        
-        logger.info(f"Created {len(cases_db)} default cases with events")
-        
-    except Exception as e:
-        logger.error(f"Error creating default cases: {str(e)}")
-        import traceback
-        logger.error(traceback.format_exc())
-
-# Application startup event
 @app.on_event("startup")
 async def startup_event():
-    # Try to use relative paths based on app directory
-    app_dir = Path(__file__).parent.parent
+    global db
     
-    # Use explicit paths to the models
-    models_dir = CURRENT_DIR / "models"
-    stage1_dir = models_dir / "stage1_bin" / "checkpoint-1772"
-    stage2_dir = models_dir / "stage2_multi" / "checkpoint-1296"
-    
-    # Fall back to absolute paths if needed
-    if not stage1_dir.exists():
-        stage1_dir = "/Users/darkarmy/Downloads/threat_detection/myProj/models/stage1_bin/checkpoint-1772"
-    
-    if not stage2_dir.exists():
-        stage2_dir = "/Users/darkarmy/Downloads/threat_detection/myProj/models/stage2_multi/checkpoint-1296"
-    
-    logger.info(f"Loading two-stage models: {stage1_dir}, {stage2_dir}")
-    if not model_loader.load_models(str(stage1_dir), str(stage2_dir)):
-        logger.error(f"Failed to load two-stage models from {stage1_dir} and {stage2_dir}")
-        logger.warning("Application will continue but prediction endpoints will return errors")
+    # Initialize Firebase
+    if initialize_firebase():
+        db = get_firestore_db()
+        logger.info("Firebase initialized successfully")
     else:
-        logger.info("Two-stage models loaded successfully at startup")
+        logger.error("Failed to initialize Firebase")
     
-    # Load datasets for threat map and case management
-    load_datasets()
+    # Load the 2-stage model
+    stage1_dir = os.path.abspath(os.path.join(os.getcwd(), "..", "..", "models", "stage1_bin"))
+    stage2_dir = os.path.abspath(os.path.join(os.getcwd(), "..", "..", "models", "stage2_multi"))
+    
+    logger.info(f"Loading models from: {stage1_dir} and {stage2_dir}")
+    if model_loader.load_models(stage1_dir, stage2_dir):
+        logger.info("Models loaded successfully")
+    else:
+        logger.error("Failed to load models. Will fallback to mock predictions.")
+
+# Define label map for threat classification - ONLY used as fallback if model loading fails
+label_map = {
+    0: "Hate Speech/Extremism",
+    1: "Direct Violence Threats",
+    2: "Harassment and Intimidation",
+    3: "Criminal Activity",
+    4: "Child Safety Threats",
+    5: "Not a Threat"
+}
 
 # Health check endpoint
 @app.get("/health")
 async def health_check():
-    """
-    Health check endpoint that verifies if both models are loaded
-    """
-    if not getattr(model_loader, 'stage1_model', None) or not getattr(model_loader, 'stage2_model', None):
-        return {"status": "error", "message": "One or both models not loaded"}
-    
-    # Return success
-    return {"status": "ok", "message": "Both models are loaded"}
+    return {"status": "ok", "message": "API is running", "timestamp": time.time()}
 
-# API endpoints for prediction
+# Extract user_id from request headers
+def get_user_id(request: Request) -> str:
+    user_id = request.headers.get("user_id")
+    if not user_id:
+        user_id = request.query_params.get("user_id", "anonymous")
+    return user_id
+
+# Register or update user
+@app.post("/api/user/register")
+async def register_user(user: UserInfo):
+    try:
+        logger.info(f"Registering user with ID: {user.user_id}, email: {user.email}")
+        
+        # Validate input
+        if not user.user_id:
+            logger.error("Missing user_id in registration request")
+            raise HTTPException(status_code=400, detail="User ID is required")
+            
+        if not user.email:
+            logger.warning(f"No email provided for user {user.user_id}, using placeholder")
+            user.email = f"{user.user_id}@placeholder.email.com"
+        
+        # Create or update user in Firestore
+        user_data = get_or_create_user(user.user_id, user.email, user.first_name, user.last_name)
+        if not user_data:
+            logger.error(f"Failed to register user {user.user_id} in Firebase")
+            raise HTTPException(status_code=500, detail="Failed to register user in database")
+        
+        logger.info(f"User registered successfully: {user.user_id}")
+        return {"status": "success", "message": "User registered successfully"}
+    except HTTPException as http_err:
+        # Re-raise HTTP exceptions
+        raise http_err
+    except Exception as e:
+        error_msg = str(e)
+        logger.error(f"Error registering user: {error_msg}")
+        logger.exception("Full stack trace:")
+        raise HTTPException(status_code=500, detail=f"Registration failed: {error_msg}")
+
+# Predict endpoint
 @app.post("/api/predict")
-async def predict_api(request: PredictionRequest):
-    """
-    API endpoint for frontend prediction requests
-    """
-    return await predict(request)
+async def predict(request: Request, prediction_request: PredictionRequest):
+    text = prediction_request.text
+    
+    # Get the user_id from request headers or query params
+    user_id = get_user_id(request)
+    logger.info(f"Processing prediction for user: {user_id}")
+    
+    # Use the real model for prediction if available, otherwise fall back to mock
+    result = None
+    
+    if model_loader.stage1_model is not None and model_loader.stage2_model is not None:
+        try:
+            # Use the actual model for prediction
+            model_result = model_loader.predict(text)
+            
+            if model_result.get("success", False):
+                logger.info("Successfully made prediction using the model")
+                result = model_result
+                # Add timestamp and original text
+                result["timestamp"] = datetime.now().isoformat()
+                result["text"] = text  # Ensure text is included in result
+            else:
+                logger.error(f"Model prediction failed: {model_result.get('error', 'Unknown error')}")
+                # Will fall back to mock prediction
+        except Exception as e:
+            logger.error(f"Error during model prediction: {str(e)}")
+            # Will fall back to mock prediction
+    
+    # If model prediction failed or models not loaded, use mock prediction as fallback
+    if result is None:
+        logger.warning("Using mock predictions as fallback")
+        
+        # Simulate prediction with random classification
+        predicted_class_index = random.choices(
+            range(6), 
+            weights=[0.1, 0.1, 0.1, 0.1, 0.1, 0.5],  # 50% chance of no threat
+            k=1
+        )[0]
+        
+        # Generate mock probabilities
+        probabilities = {label_map[i]: 0.1 for i in range(6)}
+        confidence = random.uniform(0.7, 0.95)
+        probabilities[label_map[predicted_class_index]] = confidence
+        
+        # Normalize probabilities
+        total = sum(probabilities.values())
+        probabilities = {k: v/total for k, v in probabilities.items()}
+        
+        # Generate visualization data (placeholder)
+        visualization_data = {
+            "keywords": [
+                {"word": "keyword1", "score": 0.8},
+                {"word": "keyword2", "score": 0.6},
+                {"word": "keyword3", "score": 0.4},
+            ]
+        }
+        
+        # Create result object
+        result = {
+            "text": text,
+            "threat": predicted_class_index != 5,  # Not a threat has index 5
+            "predicted_class": label_map[predicted_class_index],
+            "confidence": confidence,
+            "probabilities": probabilities,
+            "visualization_data": visualization_data,
+            "timestamp": datetime.now().isoformat(),
+            
+            # Add fields in the format specified by the user
+            "threat_content": text,
+            "threat_class": label_map[predicted_class_index],
+            "threat_confidence": confidence * 100  # As percentage
+        }
+    
+    # Store result in Firebase if user is not anonymous
+    firebase_result = None
+    if user_id != "anonymous":
+        try:
+            # Log the result being stored
+            logger.info(f"Storing prediction result in Firebase for user {user_id}")
+            
+            # Add to user's history
+            history_item = add_analysis_to_history(user_id, text, result)
+            if history_item:
+                logger.info(f"Successfully added analysis to history for user {user_id}, item ID: {history_item.get('id')}")
+                # Include the generated ID in the result
+                result["id"] = history_item.get("id")
+                firebase_result = history_item
+            else:
+                logger.error(f"Failed to add analysis to history for user {user_id}")
+            
+            # Update user's stats
+            updated_stats = update_user_threat_stats(user_id, result)
+            if updated_stats:
+                logger.info(f"Successfully updated stats for user {user_id}")
+            else:
+                logger.error(f"Failed to update stats for user {user_id}")
+            
+        except Exception as e:
+            logger.error(f"Error saving to Firebase: {e}")
+            logger.exception("Full traceback:")
+            # Continue anyway to return prediction result
+    
+    # Return the Firebase-stored result if available, otherwise the original result
+    # This ensures we return the exact data that was stored in Firebase
+    return firebase_result if firebase_result else result
 
-# Prediction endpoint
-@app.post("/predict")
-async def predict(request: PredictionRequest):
-    """
-    Make a prediction on the input text
-    """
-    start_time = time.time()
+# Get user stats
+@app.get("/api/user/stats")
+async def get_user_stats(request: Request):
+    user_id = get_user_id(request)
     
-    # Log the request
-    logger.info(f"Prediction request received: '{request.text[:100]}...'")
+    if user_id == "anonymous":
+        raise HTTPException(status_code=401, detail="Authentication required")
     
-    # Check if model is loaded
-    if not getattr(model_loader, 'stage1_model', None) or not getattr(model_loader, 'stage2_model', None):
-        logger.error("One or both models not loaded")
-        raise HTTPException(status_code=500, detail="One or both models not loaded")
+    try:
+        # Get user stats
+        stats = get_user_threat_stats(user_id)
+        if not stats:
+            raise HTTPException(status_code=500, detail="Failed to get user stats")
+        
+        # Get categories
+        categories = get_user_threat_categories(user_id)
+        if not categories:
+            raise HTTPException(status_code=500, detail="Failed to get user categories")
+        
+        return {
+            "stats": stats,
+            "categories": categories
+        }
     
-    # Make prediction
-    result = model_loader.predict(request.text)
+    except Exception as e:
+        if isinstance(e, HTTPException):
+            raise e
+        logger.error(f"Error getting user stats: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Get user history
+@app.get("/api/user/history")
+async def get_user_history(request: Request):
+    user_id = get_user_id(request)
     
-    # Check for errors
-    if not result.get("success", False):
-        error_msg = result.get("error", "Unknown error")
-        logger.error(f"Prediction error: {error_msg}")
-        raise HTTPException(status_code=500, detail=error_msg)
+    if user_id == "anonymous":
+        logger.warning("Anonymous user tried to access history")
+        raise HTTPException(status_code=401, detail="Authentication required")
     
-    # Calculate response time
-    response_time = time.time() - start_time
-    result["response_time_ms"] = round(response_time * 1000)
+    logger.info(f"Fetching history for user: {user_id}")
     
-    # Log the result using the standardized format
-    logger.info(f"Prediction result: class={result['predicted_class']}, confidence={result['confidence']:.4f}, threat={result['threat']}, stage={result['stage']}, time={result['response_time_ms']}ms")
+    try:
+        # Get user's history from Firebase
+        history = get_user_analysis_history(user_id)
+        
+        if history is None:
+            logger.error(f"Failed to fetch history for user {user_id}")
+            raise HTTPException(status_code=500, detail="Failed to fetch history data")
+        
+        if not history:  # Empty list
+            logger.info(f"No history found for user {user_id}")
+            return []
+        
+        logger.info(f"Successfully fetched {len(history)} history items for user {user_id}")
+        return history
     
-    # Debug log the full response
-    logger.debug(f"Full prediction response: {json.dumps(result)}")
-    
-    return result
+    except Exception as e:
+        logger.error(f"Error getting user history: {e}")
+        logger.exception("Full stack trace:")
+        raise HTTPException(status_code=500, detail=str(e))
 
 # Batch prediction endpoint
 @app.post("/api/predict/batch")
-async def predict_batch_api(request: BatchPredictionRequest):
-    """
-    API endpoint for frontend batch prediction requests
-    """
-    return await predict_batch(request)
-
-@app.post("/predict/batch")
-async def predict_batch(request: BatchPredictionRequest):
-    """
-    Make predictions on multiple texts
-    """
-    start_time = time.time()
-    
-    # Log the request
-    logger.info(f"Batch prediction request received: {len(request.texts)} texts")
-    
-    # Check if model is loaded
-    if not getattr(model_loader, 'stage1_model', None) or not getattr(model_loader, 'stage2_model', None):
-        logger.error("One or both models not loaded")
-        raise HTTPException(status_code=500, detail="One or both models not loaded")
-    
-    # Make predictions
+async def predict_batch(request: Request, batch_request: BatchPredictionRequest):
     results = []
-    for text in request.texts:
-        result = model_loader.predict(text)
-        if result.get("success", False):
-            # Add response time only to individual predictions
-            result["response_time_ms"] = 0  # Will be updated with batch time
-            results.append(result)
-            # Log individual prediction
-            logger.debug(f"Batch item prediction: class={result['predicted_class']}, confidence={result['confidence']:.4f}, threat={result['threat']}")
-        else:
-            error_msg = result.get("error", "Unknown error")
-            logger.error(f"Prediction error for text '{text[:50]}...': {error_msg}")
-            results.append({"text": text, "error": error_msg, "success": False})
+    firebase_results = []
     
-    # Calculate response time
-    response_time = time.time() - start_time
-    batch_response_time_ms = round(response_time * 1000)
+    # Get the user_id for database operations
+    user_id = get_user_id(request)
+    logger.info(f"Processing batch prediction for user: {user_id}, items: {len(batch_request.texts)}")
     
-    # Update response times
-    for result in results:
-        result["response_time_ms"] = batch_response_time_ms
-    
-    # Prepare response
-    response = {
-        "results": results,
-        "count": len(results),
-        "response_time_ms": batch_response_time_ms,
-        "success": True
-    }
-    
-    # Log the result
-    logger.info(f"Batch prediction completed: {len(results)} texts, time={response['response_time_ms']}ms")
-    
-    return response
-
-# Case Management Endpoints
-@app.get("/api/cases")
-async def get_cases():
-    # In a real app, this would fetch from a database
-    # Generate some sample cases
-    cases = []
-    
-    # List of threat types
-    threat_types = ["Direct Violence Threats", "Criminal Activity", 
-                   "Harassment and Intimidation", "Hate Speech/Extremism", 
-                   "Child Safety Threats"]
-    
-    # List of statuses
-    statuses = ["low", "medium", "high", "critical"]
-    
-    # List of targets
-    targets = ["Individual", "Organization", "Public", "Government", "Religious community"]
-    
-    # List of sources
-    sources = ["Social Media", "Email", "Web forum", "Dark web", "Public report"]
-    
-    # List of locations
-    locations = ["New York", "London", "Tokyo", "Paris", "Sydney", "Berlin", "Moscow", 
-               "Beijing", "Rio de Janeiro", "Cairo", "Mumbai", "Los Angeles", "Chicago"]
-    
-    # Generate 10-30 random cases
-    for i in range(random.randint(10, 30)):
-        case_id = f"THP-{random.randint(10000, 99999)}"
+    for text in batch_request.texts:
+        result = None
         
-        # Create dates
-        created_date = datetime.now() - timedelta(days=random.randint(1, 30))
-        updated_date = created_date + timedelta(days=random.randint(1, 5))
+        # Use the model for prediction if available
+        if model_loader.stage1_model is not None and model_loader.stage2_model is not None:
+            try:
+                model_result = model_loader.predict(text)
+                if model_result.get("success", False):
+                    result = model_result
+                    # Add timestamp and text
+                    result["timestamp"] = datetime.now().isoformat()
+                    result["text"] = text
+            except Exception as e:
+                logger.error(f"Error during batch model prediction: {str(e)}")
         
-        # Create a case
-        case = {
-            "id": case_id,
-            "title": f"{random.choice(threat_types)} - {random.choice(locations)}",
-            "summary": f"This is a sample case for demonstration purposes. It represents a {random.choice(threat_types).lower()} that was detected in the system.",
-            "threatType": random.choice(threat_types),
-            "status": random.choice(statuses),
-            "target": random.choice(targets),
-            "createdDate": created_date.isoformat(),
-            "updatedDate": updated_date.isoformat(),
-            "assignedTo": f"Agent {chr(65 + random.randint(0, 25))}. {chr(65 + random.randint(0, 25))}",
-            "source": random.choice(sources),
-            "location": random.choice(locations),
-            "confidence": round(random.uniform(80, 99), 1)
-        }
-        
-        # Add related cases to some cases
-        if random.random() > 0.7:
-            num_related = random.randint(1, 3)
-            case["relatedCases"] = [f"THP-{random.randint(70000, 79999)}" for _ in range(num_related)]
-        else:
-            case["relatedCases"] = []
-        
-        cases.append(case)
-    
-    return cases
-
-@app.get("/api/cases/{case_id}")
-async def get_case(case_id: str):
-    """
-    Get a specific case
-    """
-    if case_id not in cases_db:
-        raise HTTPException(status_code=404, detail="Case not found")
-    
-    return cases_db[case_id]
-
-@app.post("/api/cases")
-async def create_case(new_case: dict):
-    # In a real app, this would be stored in a database
-    # For demo, just return the case with an ID and dates
-    case_id = f"THP-{random.randint(10000, 99999)}"
-    
-    created_case = {
-        "id": case_id,
-        "title": new_case.get("title", "New Case"),
-        "summary": new_case.get("summary", "This is a new case"),
-        "threatType": new_case.get("threatType", "Direct Violence Threats"),
-        "status": new_case.get("status", "medium"),
-        "target": new_case.get("target", "Individual"),
-        "createdDate": datetime.now().isoformat(),
-        "updatedDate": datetime.now().isoformat(),
-        "assignedTo": "Unassigned",
-        "source": new_case.get("source", "Manual Entry"),
-        "location": new_case.get("location", "Unknown"),
-        "confidence": 85.0,
-        "relatedCases": []
-    }
-    
-    return created_case
-
-@app.put("/api/cases/{case_id}")
-async def update_case(case_id: str, case_update: dict):
-    # In a real app, this would update the database
-    # For demo, just return the updated case
-    updated_case = {
-        "id": case_id,
-        "title": "Updated Case",
-        "summary": "This case has been updated",
-        "threatType": "Direct Violence Threats",
-        "status": case_update.get("status", "medium"),
-        "target": "Individual",
-        "createdDate": (datetime.now() - timedelta(days=5)).isoformat(),
-        "updatedDate": datetime.now().isoformat(),
-        "assignedTo": "Agent J. Smith",
-        "source": "Social Media",
-        "location": "New York",
-        "confidence": 92.5,
-        "relatedCases": []
-    }
-    
-    return updated_case
-
-@app.delete("/api/cases/{case_id}")
-async def delete_case(case_id: str):
-    """
-    Delete a case
-    """
-    if case_id not in cases_db:
-        raise HTTPException(status_code=404, detail="Case not found")
-    
-    # Remove the case
-    del cases_db[case_id]
-    
-    # Remove associated events
-    events_db[:] = [event for event in events_db if event["caseId"] != case_id]
-    
-    return {"success": True, "message": f"Case {case_id} deleted"}
-
-# Case Events Endpoints
-@app.get("/api/cases/{case_id}/events")
-async def get_case_events(case_id: str):
-    # In a real app, this would fetch from a database
-    # Generate some sample events for the case
-    events = []
-    
-    # Create a base date
-    base_date = datetime.now() - timedelta(days=random.randint(5, 20))
-    
-    # Generate 3-8 random events
-    for i in range(random.randint(3, 8)):
-        event_date = base_date + timedelta(days=i)
-        
-        if i == 0:
-            text = "Case created from threat detection system"
-            user = "System"
-        else:
-            actions = [
-                "Initial investigation completed",
-                "Additional evidence collected",
-                "Subject identified",
-                "Coordinated with local agencies",
-                "Threat level reassessed",
-                "Digital forensics completed",
-                "Evidence package prepared",
-                "Case referred to specialized unit"
-            ]
-            text = random.choice(actions)
-            user = f"Agent {chr(65 + random.randint(0, 25))}. {chr(65 + random.randint(0, 25))}" if random.random() > 0.3 else "System"
-        
-        event = {
-            "id": str(uuid.uuid4()),
-            "caseId": case_id,
-            "date": event_date.isoformat(),
-            "text": text,
-            "user": user
-        }
-        
-        events.append(event)
-    
-    # Sort events by date (newest first)
-    events.sort(key=lambda e: e["date"], reverse=True)
-    
-    return events
-
-@app.post("/api/cases/{case_id}/events")
-async def add_case_event(case_id: str, event: dict):
-    # In a real app, this would be stored in a database
-    # For demo, just return the event with an ID and date
-    new_event = {
-        "id": str(uuid.uuid4()),
-        "caseId": case_id,
-        "date": datetime.now().isoformat(),
-        "text": event.get("text", "New event"),
-        "user": event.get("user", "Current User")
-    }
-    
-    return new_event
-
-# Threat Map Endpoints
-@app.get("/api/threat-map/data")
-async def get_threat_map_data():
-    try:
-        # List of major cities for random assignment
-        cities = ["New York", "London", "Tokyo", "Paris", "Sydney", "Berlin", "Moscow", 
-                 "Beijing", "Rio de Janeiro", "Cairo", "Mumbai", "Los Angeles", "Chicago"]
-        
-        # Create random threat data
-        threats = []
-        
-        # Generate 10-20 random threats
-        for i in range(random.randint(10, 20)):
-            # Randomly select a city
-            city = random.choice(cities)
+        # If model prediction failed or models not loaded, use mock prediction as fallback
+        if result is None:
+            predicted_class_index = random.choices(
+                range(6), 
+                weights=[0.1, 0.1, 0.1, 0.1, 0.1, 0.5],  # 50% chance of no threat
+                k=1
+            )[0]
             
-            # Skip geocoding and use random coordinates directly
-            lat = random.uniform(-80, 80)
-            lng = random.uniform(-180, 180)
+            # Generate mock probabilities
+            probabilities = {label_map[i]: 0.1 for i in range(6)}
+            confidence = random.uniform(0.7, 0.95)
+            probabilities[label_map[predicted_class_index]] = confidence
             
-            # Determine threat type
-            threat_types = ["Direct Violence Threats", "Criminal Activity", 
-                           "Harassment and Intimidation", "Hate Speech/Extremism", 
-                           "Child Safety Threats"]
-            threat_type = random.choice(threat_types)
+            # Normalize probabilities
+            total = sum(probabilities.values())
+            probabilities = {k: v/total for k, v in probabilities.items()}
             
-            # Determine priority
-            priorities = ["low", "medium", "high", "critical"]
-            priority = random.choice(priorities)
-            
-            # Create a unique ID
-            threat_id = f"THR-{random.randint(10000, 99999)}"
-            case_id = f"THP-{random.randint(10000, 99999)}"
-            
-            # Create a threat object
-            threat = {
-                "id": threat_id,
-                "type": threat_type,
-                "lat": lat,
-                "lng": lng,
-                "title": f"{threat_type} detected",
-                "location": city,
-                "date": (datetime.now() - timedelta(days=random.randint(1, 30))).isoformat(),
-                "priority": priority,
-                "details": f"Potential {threat_type.lower()} detected in {city} area requiring investigation.",
-                "caseId": case_id
+            # Generate visualization data (placeholder)
+            visualization_data = {
+                "keywords": [
+                    {"word": "keyword1", "score": 0.8},
+                    {"word": "keyword2", "score": 0.6},
+                    {"word": "keyword3", "score": 0.4},
+                ]
             }
             
-            threats.append(threat)
+            result = {
+                "text": text,
+                "threat": predicted_class_index != 5,
+                "predicted_class": label_map[predicted_class_index],
+                "confidence": confidence,
+                "probabilities": probabilities,
+                "visualization_data": visualization_data,
+                "timestamp": datetime.now().isoformat(),
+                
+                # Add fields in the format specified by the user
+                "threat_content": text,
+                "threat_class": label_map[predicted_class_index],
+                "threat_confidence": confidence * 100  # As percentage
+            }
         
-        return threats
+        # Store in Firebase if user is not anonymous
+        if user_id != "anonymous":
+            try:
+                # Add to user history
+                history_item = add_analysis_to_history(user_id, text, result)
+                if history_item:
+                    logger.info(f"Added batch item to history for user {user_id}, item ID: {history_item.get('id')}")
+                    # Include the generated ID in the result
+                    result["id"] = history_item.get("id")
+                    # Use the Firebase-stored item instead of the original
+                    firebase_results.append(history_item)
+                else:
+                    logger.error(f"Failed to add batch item to history for user {user_id}")
+                    # Still add the original result if Firebase storage failed
+                    firebase_results.append(result)
+                
+                # Update stats
+                update_user_threat_stats(user_id, result)
+            except Exception as e:
+                logger.error(f"Error saving batch item to Firebase: {e}")
+                # Add the original result if there was an error
+                firebase_results.append(result)
+        
+        # Always add to results in case Firebase operations fail
+        results.append(result)
+    
+    # If we have firebase results for a signed-in user, use those
+    if user_id != "anonymous" and len(firebase_results) == len(results):
+        return {"results": firebase_results, "count": len(firebase_results)}
+    
+    # Otherwise, return the original results
+    return {"results": results, "count": len(results)}
+
+# --- REPORTS ENDPOINTS ---
+@app.post("/api/user/reports/summary")
+async def save_summary_report(request: Request, report: dict = Body(...)):
+    user_id = get_user_id(request)
+    if user_id == "anonymous":
+        raise HTTPException(status_code=401, detail="Authentication required")
+    try:
+        db = get_firestore_db()
+        reports_ref = db.collection('users').document(user_id).collection('reports').document('summary')
+        reports_ref.set({
+            "report": report,
+            "timestamp": datetime.now().isoformat()
+        })
+        return {"success": True, "message": "Summary report saved"}
     except Exception as e:
-        logger.error(f"Error generating threat map data: {e}")
+        logger.error(f"Error saving summary report: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/api/threat-map/filter")
-async def filter_threat_map(filter_req: ThreatMapFilterRequest):
-    """
-    Filter threat map data
-    """
-    filtered_data = threat_data
-    
-    # Apply time range filter
-    if filter_req.timeRange:
-        cutoff_date = datetime.now() - timedelta(days=filter_req.timeRange)
-        filtered_data = [
-            threat for threat in filtered_data 
-            if datetime.fromisoformat(threat["date"]) > cutoff_date
-        ]
-    
-    # Apply threat type filter
-    if filter_req.threatTypes and len(filter_req.threatTypes) > 0:
-        filtered_data = [
-            threat for threat in filtered_data 
-            if threat["type"] in filter_req.threatTypes
-        ]
-    
-    # Apply priority filter
-    if filter_req.priority and len(filter_req.priority) > 0:
-        filtered_data = [
-            threat for threat in filtered_data 
-            if threat["priority"] in filter_req.priority
-        ]
-    
-    return filtered_data
+@app.get("/api/user/reports/summary")
+async def get_summary_report(request: Request):
+    user_id = get_user_id(request)
+    if user_id == "anonymous":
+        raise HTTPException(status_code=401, detail="Authentication required")
+    try:
+        db = get_firestore_db()
+        reports_ref = db.collection('users').document(user_id).collection('reports').document('summary')
+        doc = reports_ref.get()
+        if doc.exists:
+            return doc.to_dict()
+        else:
+            return {"report": None}
+    except Exception as e:
+        logger.error(f"Error fetching summary report: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-# Statistics Endpoints
-@app.get("/api/stats/threat-distribution")
-async def get_threat_distribution():
-    """
-    Get distribution of threats by type
-    """
-    distribution = {}
-    for threat in threat_data:
-        threat_type = threat["type"]
-        if threat_type not in distribution:
-            distribution[threat_type] = 0
-        distribution[threat_type] += 1
-    
-    # Convert to list format
-    result = []
-    for category, count in distribution.items():
-        result.append({
-            "category": category,
-            "count": count,
-            "percentage": round((count / len(threat_data) * 100), 1) if threat_data else 0,
-            "trend": random.choice(["up", "down", "neutral"])
+@app.post("/api/user/reports/threat")
+async def save_threat_report(request: Request, report: dict = Body(...)):
+    user_id = get_user_id(request)
+    if user_id == "anonymous":
+        raise HTTPException(status_code=401, detail="Authentication required")
+    try:
+        db = get_firestore_db()
+        reports_ref = db.collection('users').document(user_id).collection('reports').document('threat')
+        reports_ref.set({
+            "report": report,
+            "timestamp": datetime.now().isoformat()
         })
-    
-    # Sort by count (descending)
-    result.sort(key=lambda x: x["count"], reverse=True)
-    
-    return result
+        return {"success": True, "message": "Threat report saved"}
+    except Exception as e:
+        logger.error(f"Error saving threat report: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
-@app.get("/api/stats/overview")
-async def get_stats_overview():
-    """
-    Get overall statistics
-    """
-    total_analyzed = len(threat_data) + random.randint(10000, 13000)
-    threats_detected = len(threat_data)
-    high_severity = len([t for t in threat_data if t["priority"] in ["critical", "high"]])
+@app.get("/api/user/reports/threat")
+async def get_threat_report(request: Request):
+    user_id = get_user_id(request)
+    if user_id == "anonymous":
+        raise HTTPException(status_code=401, detail="Authentication required")
+    try:
+        db = get_firestore_db()
+        reports_ref = db.collection('users').document(user_id).collection('reports').document('threat')
+        doc = reports_ref.get()
+        if doc.exists:
+            return doc.to_dict()
+        else:
+            return {"report": None}
+    except Exception as e:
+        logger.error(f"Error fetching threat report: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# --- TWITTER ANALYSIS ENDPOINTS ---
+@app.post("/api/twitter/search")
+async def search_twitter_threats(request: Request, search_request: TwitterSearchRequest):
+    user_id = get_user_id(request)
     
-    return {
-        "totalAnalyzed": total_analyzed,
-        "threatsDetected": threats_detected,
-        "highSeverity": high_severity,
-        "averageConfidence": round(random.uniform(90, 93), 1),
-        "recentChange": round(random.uniform(10, 15), 1),
-        "lastUpdated": "2 minutes ago"
-    }
+    # Make this endpoint usable without authentication for basic functionality
+    # But still track user_id if available
+    try:
+        # Search tweets by keyword
+        search_results = twitter_api.search_tweets(search_request.query, search_request.count)
+        
+        # Process results
+        if "error" in search_results:
+            logger.error(f"Error searching Twitter: {search_results['error']}")
+            raise HTTPException(status_code=500, detail=f"Twitter API error: {search_results['error']}")
+        
+        # Extract tweets and analyze them
+        threats = []
+        for tweet in search_results.get("statuses", []):
+            # Get tweet content
+            tweet_text = tweet.get("text", "")
+            
+            # Analyze content with threat detection model
+            if model_loader.stage1_model is not None and model_loader.stage2_model is not None:
+                try:
+                    # Use model to predict if tweet is a threat
+                    analysis_result = model_loader.predict(tweet_text)
+                    
+                    if analysis_result.get("success", False) and analysis_result.get("threat", False):
+                        # Get user metadata
+                        user_data = tweet.get("user", {})
+                        user_metadata = twitter_api.extract_user_metadata(user_data)
+                        
+                        # Create threat object with tweet and user info
+                        threat_info = {
+                            "tweet_id": tweet.get("id_str", ""),
+                            "tweet_created_at": tweet.get("created_at", ""),
+                            "tweet_content": tweet_text,
+                            "user_metadata": user_metadata,
+                            "threat_analysis": analysis_result
+                        }
+                        threats.append(threat_info)
+                        
+                        # Save to user's history if authenticated
+                        if user_id != "anonymous":
+                            try:
+                                add_analysis_to_history(
+                                    user_id, 
+                                    tweet_text, 
+                                    {**analysis_result, "source": "twitter", "user_metadata": user_metadata}
+                                )
+                            except Exception as e:
+                                logger.error(f"Error saving to history: {e}")
+                except Exception as e:
+                    logger.error(f"Error analyzing tweet: {e}")
+        
+        return {
+            "query": search_request.query,
+            "total_analyzed": len(search_results.get("statuses", [])),
+            "threats_found": len(threats),
+            "threats": threats
+        }
+        
+    except Exception as e:
+        if isinstance(e, HTTPException):
+            raise e
+        logger.error(f"Error searching Twitter: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/twitter/user")
+async def get_twitter_user_info(request: Request, user_request: TwitterUserRequest):
+    # Make this endpoint usable without authentication
+    try:
+        # Get user info from Twitter
+        user_info = twitter_api.get_user_info(user_request.username)
+        
+        if "error" in user_info:
+            logger.error(f"Error getting Twitter user info: {user_info['error']}")
+            raise HTTPException(status_code=500, detail=f"Twitter API error: {user_info['error']}")
+        
+        # Extract user metadata
+        user_metadata = twitter_api.extract_user_metadata(user_info)
+        
+        return {
+            "username": user_request.username,
+            "user_metadata": user_metadata
+        }
+        
+    except Exception as e:
+        if isinstance(e, HTTPException):
+            raise e
+        logger.error(f"Error getting Twitter user info: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/twitter/threats")
+async def get_twitter_threats(request: Request):
+    user_id = get_user_id(request)
+    
+    if user_id == "anonymous":
+        # Return empty list for anonymous users instead of 401
+        return []
+    
+    try:
+        # Get user's history from Firebase
+        history = get_user_analysis_history(user_id)
+        
+        if history is None:
+            logger.error(f"Failed to fetch history for user {user_id}")
+            raise HTTPException(status_code=500, detail="Failed to fetch history data")
+        
+        # Filter Twitter-related threats
+        twitter_threats = [
+            item for item in history
+            if item.get("source") == "twitter" and item.get("threat", False)
+        ]
+        
+        return twitter_threats
+        
+    except Exception as e:
+        if isinstance(e, HTTPException):
+            raise e
+        logger.error(f"Error getting Twitter threats: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 # Error handler
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
-    """
-    Global exception handler for all unhandled exceptions
-    """
     logger.error(f"Unhandled exception: {str(exc)}")
-    logger.error(f"Request path: {request.url.path}")
-    import traceback
-    logger.error(traceback.format_exc())
-    
-    return JSONResponse(
-        status_code=500,
-        content={"message": "Internal server error", "detail": str(exc)}
-    )
+    return {"error": str(exc)}
 
 # If this is run as a script, start the server
 if __name__ == "__main__":

@@ -16,7 +16,9 @@ import {
   FaChevronUp,
   FaChartPie,
   FaCrosshairs,
-  FaUser
+  FaUser,
+  FaTwitter,
+  FaSearch
 } from 'react-icons/fa'
 import { motion, AnimatePresence } from 'framer-motion'
 import { useUser } from '@clerk/clerk-react'
@@ -27,6 +29,7 @@ const Sidebar = ({ isOpen }) => {
   const [threatSubmenuOpen, setThreatSubmenuOpen] = useState(true)
   const [toolsSubmenuOpen, setToolsSubmenuOpen] = useState(false)
   const [reportsSubmenuOpen, setReportsSubmenuOpen] = useState(false)
+  const [socialMediaSubmenuOpen, setSocialMediaSubmenuOpen] = useState(false)
   
   // Animation variants
   const itemVariants = {
@@ -169,6 +172,54 @@ const Sidebar = ({ isOpen }) => {
                 <FaFolderOpen className="mr-3 text-slate-400" />
                 <span>Case Management</span>
               </Link>
+            </li>
+            
+            {/* Social Media Analysis section */}
+            <li className="mt-1">
+              <button 
+                className="flex items-center justify-between w-full px-3 py-2 text-slate-400 hover:text-white text-sm font-medium rounded-md"
+                onClick={() => setSocialMediaSubmenuOpen(!socialMediaSubmenuOpen)}
+              >
+                <div className="flex items-center">
+                  <FaTwitter className="mr-3" />
+                  <span>Social Media Analysis</span>
+                </div>
+                {socialMediaSubmenuOpen ? <FaChevronUp /> : <FaChevronDown />}
+              </button>
+              
+              <AnimatePresence>
+                {socialMediaSubmenuOpen && (
+                  <motion.ul 
+                    className="mt-1 space-y-1 pl-6"
+                    initial="closed"
+                    animate="open"
+                    exit="closed"
+                    variants={{
+                      open: { opacity: 1, height: 'auto' },
+                      closed: { opacity: 0, height: 0 }
+                    }}
+                  >
+                    <motion.li variants={itemVariants}>
+                      <Link 
+                        to="/social-media/search" 
+                        className={`flex items-center px-3 py-2 rounded-md text-sm font-medium ${location.pathname === '/social-media/search' ? 'bg-slate-700 text-white' : 'text-slate-300 hover:bg-slate-700 hover:text-white'}`}
+                      >
+                        <FaSearch className="mr-3 text-slate-400" />
+                        <span>Twitter Search</span>
+                      </Link>
+                    </motion.li>
+                    <motion.li variants={itemVariants}>
+                      <Link 
+                        to="/social-media/threats" 
+                        className={`flex items-center px-3 py-2 rounded-md text-sm font-medium ${location.pathname === '/social-media/threats' ? 'bg-slate-700 text-white' : 'text-slate-300 hover:bg-slate-700 hover:text-white'}`}
+                      >
+                        <FaExclamationTriangle className="mr-3 text-slate-400" />
+                        <span>Twitter Threats</span>
+                      </Link>
+                    </motion.li>
+                  </motion.ul>
+                )}
+              </AnimatePresence>
             </li>
             
             {/* Analysis History link */}

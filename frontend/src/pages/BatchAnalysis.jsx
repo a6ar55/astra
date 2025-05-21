@@ -74,15 +74,55 @@ const BatchAnalysis = ({ apiStatus, addToHistory }) => {
     setResults([])
     
     try {
-      const response = await axios.post('/api/predict/batch', { texts })
+      // Get the user ID from the axios defaults or a user context if available
+      const userId = axios.defaults.headers.common['user_id']
+      const headers = userId ? { 'user_id': userId } : {}
+      
+      console.log("Sending batch analysis request with headers:", headers)
+      const response = await axios.post('/api/predict/batch', { texts }, { headers })
       setResults(response.data.results)
       
       // Add each result to history
       response.data.results.forEach(result => {
-        addToHistory(result)
+        if (addToHistory) {
+          console.log("Adding batch result to history:", result)
+          addToHistory(result)
+        }
       })
       
       toast.success(`Analysis complete for ${response.data.results.length} texts`)
+      
+      // If user is signed in, refresh history data after a delay
+      if (userId) {
+        setTimeout(async () => {
+          try {
+            console.log("Refreshing history data after batch analysis")
+            const historyResponse = await axios.get('/api/user/history', {
+              headers: { 'user_id': userId }
+            })
+            
+            if (historyResponse.data && Array.isArray(historyResponse.data)) {
+              console.log(`Received ${historyResponse.data.length} history items after batch analysis`)
+              
+              // Update global history data if needed
+              if (window.refreshHistory && typeof window.refreshHistory === 'function') {
+                window.refreshHistory(historyResponse.data)
+              }
+              
+              // Update localStorage backup
+              localStorage.setItem(`detection-history-${userId}`, JSON.stringify(historyResponse.data))
+              
+              // Also show a notification about history update
+              toast.info(`${historyResponse.data.length} items in history updated`)
+            } else {
+              console.warn("Did not receive valid history data after batch analysis")
+            }
+          } catch (error) {
+            console.error("Error refreshing history after batch analysis:", error)
+            console.error("Error details:", error.response?.data || error.message)
+          }
+        }, 1500) // Longer delay for batch processing
+      }
     } catch (error) {
       console.error('Batch prediction error:', error)
       toast.error(error.response?.data?.detail || 'Failed to analyze texts')

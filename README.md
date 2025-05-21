@@ -1,3 +1,109 @@
+# Astra: Two-Stage Threat Detection Platform
+
+Astra is a comprehensive threat detection platform that employs a two-stage approach to accurately identify and classify threatening content.
+
+## Two-Stage Model Architecture
+
+### Stage 1: Binary Classification
+The first stage model performs binary classification to determine if content is a threat or non-threat. This approach:
+- Increases efficiency by quickly filtering out non-threatening content
+- Reduces false positives by applying specialized analysis only where needed
+- Improves overall system performance
+
+### Stage 2: Multi-class Classification
+If content is identified as a threat in Stage 1, it is passed to the Stage 2 model which classifies the specific type of threat:
+- Hate Speech/Extremism
+- Direct Violence Threats
+- Harassment and Intimidation
+- Criminal Activity
+- Child Safety Threats
+
+## Project Structure
+
+```
+threat-detection-platform/
+├── backend/               # FastAPI backend server
+│   ├── app/               # API endpoints and core logic
+│   │   ├── model_loader.py  # Two-stage model loading and prediction
+│   │   └── main.py        # API routes
+│   └── database/          # Database connectivity
+├── data/                  # Dataset processing
+│   ├── combined_dataset.csv       # Full multi-class dataset
+│   └── stage1_binary_dataset.py   # Binary dataset generator
+├── frontend/              # React frontend
+│   └── src/
+│       ├── components/    # Reusable UI components
+│       └── pages/         # Application pages
+└── llm/                   # Model training scripts
+    ├── train_stage1_binary.py     # Stage 1 model training
+    ├── train_stage2_multi.py      # Stage 2 model training
+    └── train_models.sh            # Training automation script
+```
+
+## Getting Started
+
+### 1. Setup Environment
+
+```bash
+# Clone the repository
+git clone https://github.com/yourusername/threat-detection-platform.git
+cd threat-detection-platform
+
+# Install dependencies
+pip install -r requirements.txt
+```
+
+### 2. Data Preparation
+
+```bash
+# Generate binary dataset for Stage 1
+cd data
+python stage1_binary_dataset.py
+```
+
+### 3. Train Models
+
+```bash
+# Run the training script for both models
+cd ../llm
+./train_models.sh
+```
+
+### 4. Run the Application
+
+```bash
+# Start the backend server
+cd ../backend
+uvicorn app.main:app --reload
+
+# In another terminal, start the frontend
+cd ../frontend
+npm install
+npm start
+```
+
+## Using the Platform
+
+1. **Input Content**: Enter text in the analysis field on the dashboard
+2. **Two-Stage Analysis**: The system will:
+   - First determine if the content is a threat (Stage 1)
+   - If a threat, classify the specific type (Stage 2)
+3. **View Results**: The interface displays:
+   - Stage 1 results with confidence scores
+   - Stage 2 detailed classification (if applicable)
+   - Severity assessment and recommended actions
+
+## API Endpoints
+
+- `POST /api/predict`: Analyze a single text input
+- `POST /api/predict/batch`: Analyze multiple texts
+- `GET /api/user/stats`: Get user threat statistics
+- `GET /api/user/history`: Get user analysis history
+
+## License
+
+This project is licensed under the MIT License - see the LICENSE file for details.
+
 # Astra
 
 ## Overview
