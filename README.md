@@ -2,6 +2,9 @@
 
 Astra is a comprehensive threat detection platform that employs a two-stage approach to accurately identify and classify threatening content.
 
+![WhatsApp Image 2025-06-07 at 15 43 13](https://github.com/user-attachments/assets/bd740a98-127f-44ad-a7e2-d5f1aa7bcff8)
+
+
 ## Two-Stage Model Architecture
 
 ### Stage 1: Binary Classification
