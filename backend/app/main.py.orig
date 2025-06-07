@@ -1,0 +1,626 @@
+import os
+import sys
+import time
+import random
+from datetime import datetime
+from fastapi import FastAPI, HTTPException, Request, Body
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from typing import Dict, Any, List, Optional
+import logging
+
+# Set up path for imports
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+# Import Firebase configuration
+from firebase_config import (
+    initialize_firebase, 
+    get_firestore_db,
+    get_or_create_user, 
+    get_user_threat_stats, 
+    get_user_threat_categories,
+    get_user_analysis_history, 
+    add_analysis_to_history, 
+    update_user_threat_stats
+)
+
+# Import model loader
+from app.model_loader import model_loader
+# Import Twitter API
+from app.twitter_api import twitter_api
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(asctime)s [%(levelname)s] %(message)s",
+    handlers=[
+        logging.StreamHandler()
+    ]
+)
+logger = logging.getLogger(__name__)
+
+# Define request models
+class PredictionRequest(BaseModel):
+    text: str
+
+class BatchPredictionRequest(BaseModel):
+    texts: List[str]
+
+class UserInfo(BaseModel):
+    user_id: str
+    email: str
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
+
+# Twitter-related request models
+class TwitterSearchRequest(BaseModel):
+    query: str
+    count: int = 20
+
+class TwitterUserRequest(BaseModel):
+    username: str
+
+# Create FastAPI app
+app = FastAPI(
+    title="Astra API",
+    description="Astra: API for detecting threatening content in text",
+    version="1.0.0"
+)
+
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Initialize Firebase on startup
+db = None
+
+@app.on_event("startup")
+async def startup_event():
+    global db
+    
+    # Initialize Firebase
+    if initialize_firebase():
+        db = get_firestore_db()
+        logger.info("Firebase initialized successfully")
+    else:
+        logger.error("Failed to initialize Firebase")
+    
+    # Load the 2-stage model
+    stage1_dir = os.path.abspath(os.path.join(os.getcwd(), "..", "..", "models", "stage1_bin"))
+    stage2_dir = os.path.abspath(os.path.join(os.getcwd(), "..", "..", "models", "stage2_multi"))
+    
+    logger.info(f"Loading models from: {stage1_dir} and {stage2_dir}")
+    if model_loader.load_models(stage1_dir, stage2_dir):
+        logger.info("Models loaded successfully")
+    else:
+        logger.error("Failed to load models. Will fallback to mock predictions.")
+
+# Define label map for threat classification - ONLY used as fallback if model loading fails
+label_map = {
+    0: "Hate Speech/Extremism",
+    1: "Direct Violence Threats",
+    2: "Harassment and Intimidation",
+    3: "Criminal Activity",
+    4: "Child Safety Threats",
+    5: "Not a Threat"
+}
+
+# Health check endpoint
+@app.get("/health")
+async def health_check():
+    return {"status": "ok", "message": "API is running", "timestamp": time.time()}
+
+# Extract user_id from request headers
+def get_user_id(request: Request) -> str:
+    user_id = request.headers.get("user_id")
+    if not user_id:
+        user_id = request.query_params.get("user_id", "anonymous")
+    return user_id
+
+# Register or update user
+@app.post("/api/user/register")
+async def register_user(user: UserInfo):
+    try:
+        logger.info(f"Registering user with ID: {user.user_id}, email: {user.email}")
+        
+        # Validate input
+        if not user.user_id:
+            logger.error("Missing user_id in registration request")
+            raise HTTPException(status_code=400, detail="User ID is required")
+            
+        if not user.email:
+            logger.warning(f"No email provided for user {user.user_id}, using placeholder")
+            user.email = f"{user.user_id}@placeholder.email.com"
+        
+        # Create or update user in Firestore
+        user_data = get_or_create_user(user.user_id, user.email, user.first_name, user.last_name)
+        if not user_data:
+            logger.error(f"Failed to register user {user.user_id} in Firebase")
+            raise HTTPException(status_code=500, detail="Failed to register user in database")
+        
+        logger.info(f"User registered successfully: {user.user_id}")
+        return {"status": "success", "message": "User registered successfully"}
+    except HTTPException as http_err:
+        # Re-raise HTTP exceptions
+        raise http_err
+    except Exception as e:
+        error_msg = str(e)
+        logger.error(f"Error registering user: {error_msg}")
+        logger.exception("Full stack trace:")
+        raise HTTPException(status_code=500, detail=f"Registration failed: {error_msg}")
+
+# Predict endpoint
+@app.post("/api/predict")
+async def predict(request: Request, prediction_request: PredictionRequest):
+    text = prediction_request.text
+    
+    # Get the user_id from request headers or query params
+    user_id = get_user_id(request)
+    logger.info(f"Processing prediction for user: {user_id}")
+    
+    # Use the real model for prediction if available, otherwise fall back to mock
+    result = None
+    
+    if model_loader.stage1_model is not None and model_loader.stage2_model is not None:
+        try:
+            # Use the actual model for prediction
+            model_result = model_loader.predict(text)
+            
+            if model_result.get("success", False):
+                logger.info("Successfully made prediction using the model")
+                result = model_result
+                # Add timestamp and original text
+                result["timestamp"] = datetime.now().isoformat()
+                result["text"] = text  # Ensure text is included in result
+            else:
+                logger.error(f"Model prediction failed: {model_result.get('error', 'Unknown error')}")
+                # Will fall back to mock prediction
+        except Exception as e:
+            logger.error(f"Error during model prediction: {str(e)}")
+            # Will fall back to mock prediction
+    
+    # If model prediction failed or models not loaded, use mock prediction as fallback
+    if result is None:
+        logger.warning("Using mock predictions as fallback")
+        
+        # Simulate prediction with random classification
+        predicted_class_index = random.choices(
+            range(6), 
+            weights=[0.1, 0.1, 0.1, 0.1, 0.1, 0.5],  # 50% chance of no threat
+            k=1
+        )[0]
+        
+        # Generate mock probabilities
+        probabilities = {label_map[i]: 0.1 for i in range(6)}
+        confidence = random.uniform(0.7, 0.95)
+        probabilities[label_map[predicted_class_index]] = confidence
+        
+        # Normalize probabilities
+        total = sum(probabilities.values())
+        probabilities = {k: v/total for k, v in probabilities.items()}
+        
+        # Generate visualization data (placeholder)
+        visualization_data = {
+            "keywords": [
+                {"word": "keyword1", "score": 0.8},
+                {"word": "keyword2", "score": 0.6},
+                {"word": "keyword3", "score": 0.4},
+            ]
+        }
+        
+        # Create result object
+        result = {
+            "text": text,
+            "threat": predicted_class_index != 5,  # Not a threat has index 5
+            "predicted_class": label_map[predicted_class_index],
+            "confidence": confidence,
+            "probabilities": probabilities,
+            "visualization_data": visualization_data,
+            "timestamp": datetime.now().isoformat(),
+            
+            # Add fields in the format specified by the user
+            "threat_content": text,
+            "threat_class": label_map[predicted_class_index],
+            "threat_confidence": confidence * 100  # As percentage
+        }
+    
+    # Store result in Firebase if user is not anonymous
+    firebase_result = None
+    if user_id != "anonymous":
+        try:
+            # Log the result being stored
+            logger.info(f"Storing prediction result in Firebase for user {user_id}")
+            
+            # Add to user's history
+            history_item = add_analysis_to_history(user_id, text, result)
+            if history_item:
+                logger.info(f"Successfully added analysis to history for user {user_id}, item ID: {history_item.get('id')}")
+                # Include the generated ID in the result
+                result["id"] = history_item.get("id")
+                firebase_result = history_item
+            else:
+                logger.error(f"Failed to add analysis to history for user {user_id}")
+            
+            # Update user's stats
+            updated_stats = update_user_threat_stats(user_id, result)
+            if updated_stats:
+                logger.info(f"Successfully updated stats for user {user_id}")
+            else:
+                logger.error(f"Failed to update stats for user {user_id}")
+        except Exception as e:
+            logger.error(f"Error saving to Firebase: {e}")
+            logger.exception("Full traceback:")
+            # Continue anyway to return prediction result
+    
+    # Return the Firebase-stored result if available, otherwise the original result
+    # This ensures we return the exact data that was stored in Firebase
+    return firebase_result if firebase_result else result
+
+# Get user stats
+@app.get("/api/user/stats")
+async def get_user_stats(request: Request):
+    user_id = get_user_id(request)
+    
+    if user_id == "anonymous":
+        raise HTTPException(status_code=401, detail="Authentication required")
+    
+    try:
+        # Get user stats
+        stats = get_user_threat_stats(user_id)
+        if not stats:
+            raise HTTPException(status_code=500, detail="Failed to get user stats")
+        
+        # Get categories
+        categories = get_user_threat_categories(user_id)
+        if not categories:
+            raise HTTPException(status_code=500, detail="Failed to get user categories")
+        
+        return {
+            "stats": stats,
+            "categories": categories
+        }
+    
+    except Exception as e:
+        if isinstance(e, HTTPException):
+            raise e
+        logger.error(f"Error getting user stats: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Get user history
+@app.get("/api/user/history")
+async def get_user_history(request: Request):
+    user_id = get_user_id(request)
+    
+    if user_id == "anonymous":
+        logger.warning("Anonymous user tried to access history")
+        raise HTTPException(status_code=401, detail="Authentication required")
+    
+    logger.info(f"Fetching history for user: {user_id}")
+    
+    try:
+        # Get user's history from Firebase
+        history = get_user_analysis_history(user_id)
+        
+        if history is None:
+            logger.error(f"Failed to fetch history for user {user_id}")
+            raise HTTPException(status_code=500, detail="Failed to fetch history data")
+        
+        if not history:  # Empty list
+            logger.info(f"No history found for user {user_id}")
+            return []
+        
+        logger.info(f"Successfully fetched {len(history)} history items for user {user_id}")
+        return history
+    
+    except Exception as e:
+        logger.error(f"Error getting user history: {e}")
+        logger.exception("Full stack trace:")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Batch prediction endpoint
+@app.post("/api/predict/batch")
+async def predict_batch(request: Request, batch_request: BatchPredictionRequest):
+    results = []
+    firebase_results = []
+    
+    # Get the user_id for database operations
+    user_id = get_user_id(request)
+    logger.info(f"Processing batch prediction for user: {user_id}, items: {len(batch_request.texts)}")
+    
+    for text in batch_request.texts:
+        result = None
+        
+        # Use the model for prediction if available
+        if model_loader.stage1_model is not None and model_loader.stage2_model is not None:
+            try:
+                model_result = model_loader.predict(text)
+                if model_result.get("success", False):
+                    result = model_result
+                    # Add timestamp and text
+                    result["timestamp"] = datetime.now().isoformat()
+                    result["text"] = text
+            except Exception as e:
+                logger.error(f"Error during batch model prediction: {str(e)}")
+        
+        # If model prediction failed or models not loaded, use mock prediction as fallback
+        if result is None:
+            predicted_class_index = random.choices(
+                range(6), 
+                weights=[0.1, 0.1, 0.1, 0.1, 0.1, 0.5],  # 50% chance of no threat
+                k=1
+            )[0]
+            
+            # Generate mock probabilities
+            probabilities = {label_map[i]: 0.1 for i in range(6)}
+            confidence = random.uniform(0.7, 0.95)
+            probabilities[label_map[predicted_class_index]] = confidence
+            
+            # Normalize probabilities
+            total = sum(probabilities.values())
+            probabilities = {k: v/total for k, v in probabilities.items()}
+            
+            # Generate visualization data (placeholder)
+            visualization_data = {
+                "keywords": [
+                    {"word": "keyword1", "score": 0.8},
+                    {"word": "keyword2", "score": 0.6},
+                    {"word": "keyword3", "score": 0.4},
+                ]
+            }
+            
+            result = {
+                "text": text,
+                "threat": predicted_class_index != 5,
+                "predicted_class": label_map[predicted_class_index],
+                "confidence": confidence,
+                "probabilities": probabilities,
+                "visualization_data": visualization_data,
+                "timestamp": datetime.now().isoformat(),
+                
+                # Add fields in the format specified by the user
+                "threat_content": text,
+                "threat_class": label_map[predicted_class_index],
+                "threat_confidence": confidence * 100  # As percentage
+            }
+        
+        # Store in Firebase if user is not anonymous
+        if user_id != "anonymous":
+            try:
+                # Add to user history
+                history_item = add_analysis_to_history(user_id, text, result)
+                if history_item:
+                    logger.info(f"Added batch item to history for user {user_id}, item ID: {history_item.get('id')}")
+                    # Include the generated ID in the result
+                    result["id"] = history_item.get("id")
+                    # Use the Firebase-stored item instead of the original
+                    firebase_results.append(history_item)
+                else:
+                    logger.error(f"Failed to add batch item to history for user {user_id}")
+                    # Still add the original result if Firebase storage failed
+                    firebase_results.append(result)
+                
+                # Update stats
+                update_user_threat_stats(user_id, result)
+            except Exception as e:
+                logger.error(f"Error saving batch item to Firebase: {e}")
+                # Add the original result if there was an error
+                firebase_results.append(result)
+        
+        # Always add to results in case Firebase operations fail
+        results.append(result)
+    
+    # If we have firebase results for a signed-in user, use those
+    if user_id != "anonymous" and len(firebase_results) == len(results):
+        return {"results": firebase_results, "count": len(firebase_results)}
+    
+    # Otherwise, return the original results
+    return {"results": results, "count": len(results)}
+
+# --- REPORTS ENDPOINTS ---
+@app.post("/api/user/reports/summary")
+async def save_summary_report(request: Request, report: dict = Body(...)):
+    user_id = get_user_id(request)
+    if user_id == "anonymous":
+        raise HTTPException(status_code=401, detail="Authentication required")
+    try:
+        db = get_firestore_db()
+        reports_ref = db.collection('users').document(user_id).collection('reports').document('summary')
+        reports_ref.set({
+            "report": report,
+            "timestamp": datetime.now().isoformat()
+        })
+        return {"success": True, "message": "Summary report saved"}
+    except Exception as e:
+        logger.error(f"Error saving summary report: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/user/reports/summary")
+async def get_summary_report(request: Request):
+    user_id = get_user_id(request)
+    if user_id == "anonymous":
+        raise HTTPException(status_code=401, detail="Authentication required")
+    try:
+        db = get_firestore_db()
+        reports_ref = db.collection('users').document(user_id).collection('reports').document('summary')
+        doc = reports_ref.get()
+        if doc.exists:
+            return doc.to_dict()
+        else:
+            return {"report": None}
+    except Exception as e:
+        logger.error(f"Error fetching summary report: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/user/reports/threat")
+async def save_threat_report(request: Request, report: dict = Body(...)):
+    user_id = get_user_id(request)
+    if user_id == "anonymous":
+        raise HTTPException(status_code=401, detail="Authentication required")
+    try:
+        db = get_firestore_db()
+        reports_ref = db.collection('users').document(user_id).collection('reports').document('threat')
+        reports_ref.set({
+            "report": report,
+            "timestamp": datetime.now().isoformat()
+        })
+        return {"success": True, "message": "Threat report saved"}
+    except Exception as e:
+        logger.error(f"Error saving threat report: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/user/reports/threat")
+async def get_threat_report(request: Request):
+    user_id = get_user_id(request)
+    if user_id == "anonymous":
+        raise HTTPException(status_code=401, detail="Authentication required")
+    try:
+        db = get_firestore_db()
+        reports_ref = db.collection('users').document(user_id).collection('reports').document('threat')
+        doc = reports_ref.get()
+        if doc.exists:
+            return doc.to_dict()
+        else:
+            return {"report": None}
+    except Exception as e:
+        logger.error(f"Error fetching threat report: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# --- TWITTER ANALYSIS ENDPOINTS ---
+@app.post("/api/twitter/search")
+async def search_twitter_threats(request: Request, search_request: TwitterSearchRequest):
+    user_id = get_user_id(request)
+    
+    # Make this endpoint usable without authentication for basic functionality
+    # But still track user_id if available
+    try:
+        # Search tweets by keyword
+        search_results = twitter_api.search_tweets(search_request.query, search_request.count)
+        
+        # Process results
+        if "error" in search_results:
+            logger.error(f"Error searching Twitter: {search_results['error']}")
+            raise HTTPException(status_code=500, detail=f"Twitter API error: {search_results['error']}")
+        
+        # Extract tweets and analyze them
+        threats = []
+        for tweet in search_results.get("statuses", []):
+            # Get tweet content
+            tweet_text = tweet.get("text", "")
+            
+            # Analyze content with threat detection model
+            if model_loader.stage1_model is not None and model_loader.stage2_model is not None:
+                try:
+                    # Use model to predict if tweet is a threat
+                    analysis_result = model_loader.predict(tweet_text)
+                    
+                    if analysis_result.get("success", False) and analysis_result.get("threat", False):
+                        # Get user metadata
+                        user_data = tweet.get("user", {})
+                        user_metadata = twitter_api.extract_user_metadata(user_data)
+                        
+                        # Create threat object with tweet and user info
+                        threat_info = {
+                            "tweet_id": tweet.get("id_str", ""),
+                            "tweet_created_at": tweet.get("created_at", ""),
+                            "tweet_content": tweet_text,
+                            "user_metadata": user_metadata,
+                            "threat_analysis": analysis_result
+                        }
+                        threats.append(threat_info)
+                        
+                        # Save to user's history if authenticated
+                        if user_id != "anonymous":
+                            try:
+                                add_analysis_to_history(
+                                    user_id, 
+                                    tweet_text, 
+                                    {**analysis_result, "source": "twitter", "user_metadata": user_metadata}
+                                )
+                            except Exception as e:
+                                logger.error(f"Error saving to history: {e}")
+                except Exception as e:
+                    logger.error(f"Error analyzing tweet: {e}")
+        
+        return {
+            "query": search_request.query,
+            "total_analyzed": len(search_results.get("statuses", [])),
+            "threats_found": len(threats),
+            "threats": threats
+        }
+        
+    except Exception as e:
+        if isinstance(e, HTTPException):
+            raise e
+        logger.error(f"Error searching Twitter: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/twitter/user")
+async def get_twitter_user_info(request: Request, user_request: TwitterUserRequest):
+    # Make this endpoint usable without authentication
+    try:
+        # Get user info from Twitter
+        user_info = twitter_api.get_user_info(user_request.username)
+        
+        if "error" in user_info:
+            logger.error(f"Error getting Twitter user info: {user_info['error']}")
+            raise HTTPException(status_code=500, detail=f"Twitter API error: {user_info['error']}")
+        
+        # Extract user metadata
+        user_metadata = twitter_api.extract_user_metadata(user_info)
+        
+        return {
+            "username": user_request.username,
+            "user_metadata": user_metadata
+        }
+        
+    except Exception as e:
+        if isinstance(e, HTTPException):
+            raise e
+        logger.error(f"Error getting Twitter user info: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/twitter/threats")
+async def get_twitter_threats(request: Request):
+    user_id = get_user_id(request)
+    
+    if user_id == "anonymous":
+        # Return empty list for anonymous users instead of 401
+        return []
+    
+    try:
+        # Get user's history from Firebase
+        history = get_user_analysis_history(user_id)
+        
+        if history is None:
+            logger.error(f"Failed to fetch history for user {user_id}")
+            raise HTTPException(status_code=500, detail="Failed to fetch history data")
+        
+        # Filter Twitter-related threats
+        twitter_threats = [
+            item for item in history
+            if item.get("source") == "twitter" and item.get("threat", False)
+        ]
+        
+        return twitter_threats
+        
+    except Exception as e:
+        if isinstance(e, HTTPException):
+            raise e
+        logger.error(f"Error getting Twitter threats: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Error handler
+@app.exception_handler(Exception)
+async def global_exception_handler(request: Request, exc: Exception):
+    logger.error(f"Unhandled exception: {str(exc)}")
+    return {"error": str(exc)}
+
+# If this is run as a script, start the server
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True) 

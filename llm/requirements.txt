@@ -1,0 +1,23 @@
+# Core ML libraries
+torch>=2.0.0
+transformers>=4.30.0
+datasets>=2.12.0
+scikit-learn>=1.0.0
+numpy>=1.22.0
+pandas>=1.5.0
+
+# PEFT and related
+peft>=0.4.0
+accelerate>=0.20.0
+
+# Visualization
+matplotlib>=3.5.0
+seaborn>=0.12.0
+
+# Utilities
+tqdm>=4.64.0
+wandb>=0.13.0
+scipy>=1.9.0
+
+# Optional - for interactive display
+ipywidgets>=8.0.0 
