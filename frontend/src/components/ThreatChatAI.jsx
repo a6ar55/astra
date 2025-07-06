@@ -17,7 +17,10 @@ import {
   FaTrash,
   FaSyncAlt,
   FaBolt,
-  FaEye
+  FaEye,
+  FaCloudDownloadAlt,
+  FaSearch,
+  FaGlobe
 } from 'react-icons/fa'
 
 const ThreatChatAI = () => {
@@ -28,6 +31,7 @@ const ThreatChatAI = () => {
   const [chatHistory, setChatHistory] = useState([])
   const [healthStatus, setHealthStatus] = useState(null)
   const [showHistory, setShowHistory] = useState(false)
+  const [webSearchEnabled, setWebSearchEnabled] = useState(false)
   const messagesEndRef = useRef(null)
   const inputRef = useRef(null)
 
@@ -112,13 +116,19 @@ I can answer questions about your threat reports, provide security insights, and
 
     try {
       const response = await axios.post('/api/chat/message', {
-        message: userMessage.content
+        message: userMessage.content,
+        use_web_search: webSearchEnabled
       }, {
         headers: { 'user_id': user?.id || 'anonymous' },
-        timeout: 60000 // 60 seconds for AI chat responses
+        timeout: webSearchEnabled ? 90000 : 60000 // Extended timeout for web search
       })
 
       if (response.data.status === 'success') {
+        // Debug: log full API response and any web sources
+        console.log('📡 Raw API response:', response.data)
+        if (response.data.web_sources && response.data.web_sources.length) {
+          console.log('🌐 Web Sources Returned:', response.data.web_sources)
+        }
         const aiMessage = {
           id: 'ai-' + Date.now(),
           role: 'assistant',
@@ -126,14 +136,26 @@ I can answer questions about your threat reports, provide security insights, and
           timestamp: response.data.timestamp,
           context_used: response.data.context_used,
           context_summary: response.data.context_summary,
+          rag_context_used: response.data.rag_context_used,
+          web_context_used: response.data.web_context_used,
+          web_sources: response.data.web_sources || [],
           model: response.data.model
         }
 
         setMessages(prev => [...prev, aiMessage])
         
-        if (response.data.context_used) {
+        // Show context feedback
+        if (response.data.rag_context_used && response.data.web_context_used) {
+          toast.success('Response enhanced with both internal intelligence and web search data', {
+            icon: '🔍🌐'
+          })
+        } else if (response.data.rag_context_used) {
           toast.success('Response enhanced with your threat intelligence data', {
             icon: '🔍'
+          })
+        } else if (response.data.web_context_used) {
+          toast.success('Response enhanced with real-time web intelligence', {
+            icon: '🌐'
           })
         }
       } else {
@@ -197,6 +219,51 @@ I can answer questions about your threat reports, provide security insights, and
     } catch (error) {
       console.error('Error refreshing RAG:', error)
       toast.error('Failed to refresh intelligence database')
+    }
+  }
+
+  const migrateData = async () => {
+    try {
+      setIsLoading(true)
+      const response = await axios.post('/api/chat/rag/migrate', {}, {
+        headers: { 'user_id': user?.id || 'anonymous' }
+      })
+      
+      if (response.data.status === 'success') {
+        const { migrated_items, final_rag_reports, breakdown } = response.data
+        toast.success(
+          `Data migration complete! ${migrated_items} items migrated. RAG now has ${final_rag_reports} reports.`, 
+          { icon: '🚀', duration: 5000 }
+        )
+        
+        // Add system message about migration
+        const migrationMessage = {
+          id: 'migration-' + Date.now(),
+          role: 'assistant',
+          content: `🚀 **Data Migration Complete**
+
+Successfully migrated your data to the intelligence database:
+
+• **Analysis History**: ${breakdown.analysis_history} items
+• **Threat Reports**: ${breakdown.threat_reports} items  
+• **Summary Reports**: ${breakdown.summary_reports} items
+
+**Total**: ${migrated_items} items migrated
+**RAG Database**: ${final_rag_reports} reports now available
+
+Your chat experience is now enhanced with your complete threat intelligence history!`,
+          timestamp: new Date().toISOString(),
+          context_used: false
+        }
+        
+        setMessages(prev => [...prev, migrationMessage])
+        checkChatHealth()
+      }
+    } catch (error) {
+      console.error('Error migrating data:', error)
+      toast.error('Failed to migrate data. Please try again.')
+    } finally {
+      setIsLoading(false)
     }
   }
 
@@ -283,6 +350,31 @@ I can answer questions about your threat reports, provide security insights, and
           </div>
           
           <div className="flex items-center space-x-2">
+            {/* Show migration button if no reports are cached */}
+            {healthStatus?.rag_service?.reports_cached === 0 && (
+              <button
+                onClick={migrateData}
+                disabled={isLoading}
+                className="btn btn-sm btn-warning tooltip"
+                data-tip="Migrate your Firebase data to RAG database"
+              >
+                <FaCloudDownloadAlt className={isLoading ? 'animate-spin' : ''} />
+                {isLoading ? 'Migrating...' : 'Sync Data'}
+              </button>
+            )}
+            
+            {/* Web Search Toggle */}
+            <button
+              onClick={() => setWebSearchEnabled(!webSearchEnabled)}
+              className={`btn btn-sm tooltip ${
+                webSearchEnabled ? 'btn-primary' : 'btn-ghost'
+              }`}
+              data-tip={webSearchEnabled ? 'Disable web search' : 'Enable web search for real-time information'}
+            >
+              <FaGlobe className={webSearchEnabled ? 'text-white' : 'text-gray-400'} />
+              {webSearchEnabled && <span className="text-xs ml-1">Web</span>}
+            </button>
+            
             <button
               onClick={refreshRAG}
               className="btn btn-sm btn-ghost tooltip"
@@ -310,6 +402,13 @@ I can answer questions about your threat reports, provide security insights, and
             <div className="flex items-center space-x-1 text-xs">
               <FaBrain className="text-blue-400" />
               <span className="text-gray-400">RAG Enhanced</span>
+              {healthStatus?.web_search_enabled && (
+                <>
+                  <span className="text-gray-500">•</span>
+                  <FaGlobe className="text-green-400" />
+                  <span className="text-gray-400">Web Ready</span>
+                </>
+              )}
             </div>
           </div>
         </div>
@@ -369,10 +468,16 @@ I can answer questions about your threat reports, provide security insights, and
                       {message.role === 'user' ? 'Agent' : 'ASTRA-AI'}
                     </span>
                     
-                    {message.context_used && (
+                    {(message.rag_context_used || message.web_context_used || message.context_used) && (
                       <div className="flex items-center space-x-1 text-xs bg-blue-900 bg-opacity-50 px-2 py-1 rounded">
-                        <FaEye className="text-blue-400" />
-                        <span className="text-blue-300">Intel Enhanced</span>
+                        {message.rag_context_used && <FaDatabase className="text-blue-400" />}
+                        {message.web_context_used && <FaGlobe className="text-green-400" />}
+                        {!message.rag_context_used && !message.web_context_used && <FaEye className="text-blue-400" />}
+                        <span className="text-blue-300">
+                          {message.rag_context_used && message.web_context_used ? 'Multi-Intel Enhanced' :
+                           message.rag_context_used ? 'Database Enhanced' :
+                           message.web_context_used ? 'Web Enhanced' : 'Intel Enhanced'}
+                        </span>
                       </div>
                     )}
                   </div>
@@ -389,13 +494,41 @@ I can answer questions about your threat reports, provide security insights, and
                 </div>
                 
                 {/* Context Summary */}
-                {message.context_summary && (
-                  <div className="mt-3 p-3 bg-blue-900 bg-opacity-30 rounded border border-blue-600 border-opacity-50">
-                    <div className="flex items-center space-x-2 text-xs text-blue-300 mb-1">
-                      <FaDatabase />
-                      <span>Intelligence Context Applied</span>
-                    </div>
-                    <p className="text-xs text-blue-200">{message.context_summary}</p>
+                {(message.context_summary || message.web_sources?.length > 0) && (
+                  <div className="mt-3 space-y-2">
+                    {message.context_summary && (
+                      <div className="p-3 bg-blue-900 bg-opacity-30 rounded border border-blue-600 border-opacity-50">
+                        <div className="flex items-center space-x-2 text-xs text-blue-300 mb-1">
+                          <FaDatabase />
+                          <span>Intelligence Context Applied</span>
+                        </div>
+                        <p className="text-xs text-blue-200">{message.context_summary}</p>
+                      </div>
+                    )}
+                    
+                    {message.web_sources && message.web_sources.length > 0 && (
+                      <div className="p-3 bg-green-900 bg-opacity-30 rounded border border-green-600 border-opacity-50">
+                        <div className="flex items-center space-x-2 text-xs text-green-300 mb-2">
+                          <FaGlobe />
+                          <span>Web Sources ({message.web_sources.length})</span>
+                        </div>
+                        <div className="space-y-1">
+                          {message.web_sources.map((source, idx) => (
+                            <div key={idx} className="text-xs">
+                              <a 
+                                href={source.url} 
+                                target="_blank" 
+                                rel="noopener noreferrer"
+                                className="text-green-400 hover:text-green-300 underline block"
+                              >
+                                {source.title}
+                              </a>
+                              <span className="text-green-200 opacity-75">({source.word_count} words)</span>
+                            </div>
+                          ))}
+                        </div>
+                      </div>
+                    )}
                   </div>
                 )}
               </div>
@@ -451,7 +584,15 @@ I can answer questions about your threat reports, provide security insights, and
         </div>
         
         <div className="mt-2 flex items-center justify-between text-xs text-gray-500">
-          <span>Press Enter to send, Shift+Enter for new line</span>
+          <div className="flex items-center space-x-4">
+            <span>Press Enter to send, Shift+Enter for new line</span>
+            {webSearchEnabled && (
+              <span className="flex items-center space-x-1 text-green-400">
+                <FaGlobe className="w-3 h-3" />
+                <span>Web search enabled</span>
+              </span>
+            )}
+          </div>
           {healthStatus?.chat_enabled && (
             <span className="flex items-center space-x-1">
               <span className="w-2 h-2 bg-green-500 rounded-full"></span>

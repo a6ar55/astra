@@ -21,7 +21,7 @@ from peft import PeftModel
 
 # Add parent directory to path for importing existing model loader
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from backend.app.model_loader import TwoStageModelLoader
+from backend.model_loader import TwoStageModelLoader
 
 # Configure logging
 logging.basicConfig(

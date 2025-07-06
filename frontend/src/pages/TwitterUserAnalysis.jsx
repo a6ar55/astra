@@ -24,9 +24,7 @@ import {
 import { Pie, Bar } from 'react-chartjs-2';
 import 'chart.js/auto';
 import apiService from '../services/apiService';
-
-// Add custom CSS for navy colors
-import './TwitterUserAnalysis.css';
+import ModelSelector from '../components/ModelSelector';
 
 const RAPID_API_KEY = "8d1cd79b4amshe05e1c93c31c055p16a3e2jsn2127cb0fc270";
 const RAPID_API_HOST = "twitter154.p.rapidapi.com";
@@ -42,6 +40,7 @@ const TwitterUserAnalysis = () => {
   const [currentUserTweets, setCurrentUserTweets] = useState([]);
   const [apiFailures, setApiFailures] = useState(0);
   const [useMockAnalysis, setUseMockAnalysis] = useState(false);
+  const [selectedModel, setSelectedModel] = useState('distilbert');
 
   // Reset API failures count on component mount
   useEffect(() => {
@@ -121,6 +120,105 @@ const TwitterUserAnalysis = () => {
   };
 
   // Analyze a single Twitter user
+  // Extract user information from Twitter API response
+  const extractUserInfoFromResponse = (response) => {
+    if (!response || !response.data) return null;
+    
+    try {
+      // Handle different response formats
+      const data = response.data;
+      
+      // Format 1: Direct user details response
+      if (data.name || data.profile_pic_url) {
+        return {
+          name: data.name,
+          display_name: data.name,
+          profile_image_url: data.profile_pic_url,
+          profile_pic_url: data.profile_pic_url,
+          profile_image_url_https: data.profile_pic_url,
+          location: data.location || '',
+          description: data.description || '',
+          bio: data.description || '',
+          followers_count: data.follower_count || 0,
+          friends_count: data.friends_count || 0,
+          following_count: data.following_count || 0,
+          verified: data.verified || false,
+          created_at: data.created_at || '',
+          public_metrics: data.public_metrics || {}
+        };
+      }
+      
+      // Format 2: Complex nested timeline response (like the user provided)
+      if (data.result && data.result.timeline && data.result.timeline.instructions) {
+        const instructions = data.result.timeline.instructions;
+        
+        for (const instruction of instructions) {
+          if (instruction.type === "TimelineAddEntries" && instruction.entries) {
+            for (const entry of instruction.entries) {
+              if (entry.content && entry.content.items) {
+                for (const item of entry.content.items) {
+                  const userResult = item.item?.itemContent?.user_results?.result;
+                  if (userResult) {
+                    const core = userResult.core || {};
+                    const legacy = userResult.legacy || {};
+                    const avatar = userResult.avatar || {};
+                    
+                    return {
+                      name: core.name || legacy.name || '',
+                      display_name: core.name || legacy.name || '',
+                      profile_image_url: avatar.image_url || legacy.profile_image_url_https || '',
+                      profile_pic_url: avatar.image_url || legacy.profile_image_url_https || '',
+                      profile_image_url_https: avatar.image_url || legacy.profile_image_url_https || '',
+                      location: legacy.location || '',
+                      description: legacy.description || '',
+                      bio: legacy.description || '',
+                      followers_count: legacy.followers_count || 0,
+                      friends_count: legacy.friends_count || 0,
+                      following_count: legacy.friends_count || 0,
+                      verified: legacy.verified || userResult.is_blue_verified || false,
+                      created_at: core.created_at || legacy.created_at || '',
+                      public_metrics: legacy.public_metrics || {}
+                    };
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+      
+      // Format 3: Standard Twitter API user object
+      if (data.data && data.data.user && data.data.user.result) {
+        const userResult = data.data.user.result;
+        const legacy = userResult.legacy || {};
+        const core = userResult.core || {};
+        const avatar = userResult.avatar || {};
+        
+        return {
+          name: core.name || legacy.name || '',
+          display_name: core.name || legacy.name || '',
+          profile_image_url: avatar.image_url || legacy.profile_image_url_https || userResult.profile_pic_url || '',
+          profile_pic_url: avatar.image_url || legacy.profile_image_url_https || userResult.profile_pic_url || '',
+          profile_image_url_https: avatar.image_url || legacy.profile_image_url_https || userResult.profile_pic_url || '',
+          location: legacy.location || '',
+          description: legacy.description || '',
+          bio: legacy.description || '',
+          followers_count: legacy.followers_count || 0,
+          friends_count: legacy.friends_count || 0,
+          following_count: legacy.friends_count || 0,
+          verified: legacy.verified || userResult.is_blue_verified || false,
+          created_at: core.created_at || legacy.created_at || '',
+          public_metrics: legacy.public_metrics || {}
+        };
+      }
+      
+    } catch (error) {
+      console.error('Error extracting user info from response:', error);
+    }
+    
+    return null;
+  };
+
   const analyzeTwitterUser = async (username, count) => {
     try {
       // Get user tweets
@@ -128,55 +226,70 @@ const TwitterUserAnalysis = () => {
       
       setAnalyzingTweets(true);
       
-      // Get user info with fallback to mock data
+      // Get user info with fallback to mock data - try multiple endpoints
       let userInfo = null;
       try {
-        const response = await axios.get(`https://${RAPID_API_HOST}/user/details`, {
-          params: { username },
-          headers: {
-            "X-RapidAPI-Key": RAPID_API_KEY,
-            "X-RapidAPI-Host": RAPID_API_HOST
-          }
-        });
-        
-        // Convert the direct response format to match our expected structure
-        userInfo = {
-          data: {
-            user: {
-              result: {
-                legacy: {
-                  name: response.data.name,
-                  description: response.data.description,
-                  followers_count: response.data.follower_count,
-                  profile_image_url_https: response.data.profile_pic_url,
-                  location: response.data.location || "Location not specified"
-                },
-                profile_pic_url: response.data.profile_pic_url
-              }
+        // First try the user/details endpoint
+        let response;
+        try {
+          response = await axios.get(`https://${RAPID_API_HOST}/user/details`, {
+            params: { username },
+            headers: {
+              "X-RapidAPI-Key": RAPID_API_KEY,
+              "X-RapidAPI-Host": RAPID_API_HOST
             }
-          },
-          raw: response.data // Store raw data just in case
-        };
+          });
+        } catch (detailsError) {
+          console.log(`User details endpoint failed for ${username}, trying search endpoint...`);
+          
+          // Fallback to search endpoint that might return the complex structure
+          try {
+            response = await axios.get("https://twitter241.p.rapidapi.com/search-v2", {
+              params: {
+                type: "Users",
+                count: "1",
+                query: username
+              },
+              headers: {
+                "x-rapidapi-key": RAPID_API_KEY,
+                "x-rapidapi-host": "twitter241.p.rapidapi.com"
+              }
+            });
+          } catch (searchError) {
+            throw new Error(`Both user detail endpoints failed: ${detailsError.message}, ${searchError.message}`);
+          }
+        }
         
-        console.log(`User info for ${username}:`, userInfo);
+        console.log(`Raw user info response for ${username}:`, response.data);
+        
+        // Extract user info using the new extraction function
+        const extractedUserInfo = extractUserInfoFromResponse(response);
+        
+        if (extractedUserInfo) {
+          userInfo = extractedUserInfo;
+          console.log(`Extracted user info for ${username}:`, userInfo);
+        } else {
+          throw new Error('Failed to extract user info from response');
+        }
+        
       } catch (error) {
         console.error(`Error fetching user info for ${username}:`, error);
         // Create mock user info
         userInfo = {
-          data: {
-            user: {
-              result: {
-                legacy: {
-                  name: username,
-                  description: `This is a mock profile for ${username} because the API request failed.`,
-                  followers_count: Math.floor(Math.random() * 10000),
-                  profile_image_url_https: "https://via.placeholder.com/200x200.png?text=User",
-                  location: "Unknown Location"
-                },
-                profile_pic_url: "https://via.placeholder.com/200x200.png?text=User"
-              }
-            }
-          }
+          name: username,
+          display_name: username,
+          profile_image_url: "https://via.placeholder.com/200x200.png?text=User",
+          profile_pic_url: "https://via.placeholder.com/200x200.png?text=User",
+          profile_image_url_https: "https://via.placeholder.com/200x200.png?text=User",
+          location: "Unknown Location",
+          description: `This is a mock profile for ${username} because the API request failed.`,
+          bio: `This is a mock profile for ${username} because the API request failed.`,
+          followers_count: Math.floor(Math.random() * 10000),
+          friends_count: Math.floor(Math.random() * 1000),
+          following_count: Math.floor(Math.random() * 1000),
+          verified: false,
+          created_at: new Date().toISOString(),
+          public_metrics: {}
         };
       }
 
@@ -184,7 +297,27 @@ const TwitterUserAnalysis = () => {
       try {
         console.log(`Sending ${userTweets.length} tweets to backend for analysis and storage...`);
         
-        const backendResponse = await apiService.analyzeTwitterUser(username, userTweets, userInfo);
+        // Ensure userInfo contains all necessary fields for proper metadata storage
+        const enrichedUserInfo = {
+          ...userInfo,
+          // Handle both direct and nested user info structures
+          name: userInfo?.name || userInfo?.display_name || userInfo?.data?.user?.result?.legacy?.name || userInfo?.data?.user?.result?.core?.name,
+          display_name: userInfo?.display_name || userInfo?.name || userInfo?.data?.user?.result?.legacy?.name || userInfo?.data?.user?.result?.core?.name,
+          profile_image_url: userInfo?.profile_image_url || userInfo?.profile_pic_url || userInfo?.profile_image_url_https || userInfo?.data?.user?.result?.legacy?.profile_image_url_https || userInfo?.data?.user?.result?.profile_pic_url,
+          profile_pic_url: userInfo?.profile_pic_url || userInfo?.profile_image_url || userInfo?.profile_image_url_https || userInfo?.data?.user?.result?.legacy?.profile_image_url_https || userInfo?.data?.user?.result?.profile_pic_url,
+          profile_image_url_https: userInfo?.profile_image_url_https || userInfo?.profile_image_url || userInfo?.profile_pic_url || userInfo?.data?.user?.result?.legacy?.profile_image_url_https || userInfo?.data?.user?.result?.profile_pic_url,
+          location: userInfo?.location || userInfo?.data?.user?.result?.legacy?.location || '',
+          description: userInfo?.description || userInfo?.bio || userInfo?.data?.user?.result?.legacy?.description || '',
+          bio: userInfo?.bio || userInfo?.description || userInfo?.data?.user?.result?.legacy?.description || '',
+          followers_count: userInfo?.followers_count || userInfo?.data?.user?.result?.legacy?.followers_count || 0,
+          friends_count: userInfo?.friends_count || userInfo?.following_count || userInfo?.data?.user?.result?.legacy?.friends_count || 0,
+          following_count: userInfo?.following_count || userInfo?.friends_count || userInfo?.data?.user?.result?.legacy?.friends_count || 0,
+          verified: userInfo?.verified || userInfo?.data?.user?.result?.legacy?.verified || userInfo?.data?.user?.result?.is_blue_verified || false,
+          created_at: userInfo?.created_at || userInfo?.data?.user?.result?.legacy?.created_at || userInfo?.data?.user?.result?.core?.created_at || '',
+          public_metrics: userInfo?.public_metrics || userInfo?.data?.user?.result?.legacy?.public_metrics || {}
+        };
+
+        const backendResponse = await apiService.analyzeTwitterUser(username, userTweets, enrichedUserInfo, selectedModel);
         
         if (backendResponse.success) {
           console.log(`Backend analysis successful for @${username}:`, backendResponse);
@@ -340,8 +473,18 @@ const TwitterUserAnalysis = () => {
                     tweet_id: tweet.id,
                     created_at: tweet.created_at,
                     likes: tweet.likes,
-                    retweets: tweet.retweets
-                  }
+                    retweets: tweet.retweets,
+                    user_name: userInfo?.name || userInfo?.display_name || userInfo?.data?.user?.result?.legacy?.name || userInfo?.data?.user?.result?.core?.name,
+                    user_profile_image_url: userInfo?.profile_image_url || userInfo?.profile_pic_url || userInfo?.profile_image_url_https || userInfo?.data?.user?.result?.legacy?.profile_image_url_https || userInfo?.data?.user?.result?.profile_pic_url,
+                    user_location: userInfo?.location || userInfo?.data?.user?.result?.legacy?.location || tweet.location,
+                    user_description: userInfo?.description || userInfo?.bio || userInfo?.data?.user?.result?.legacy?.description,
+                    user_followers_count: userInfo?.followers_count || userInfo?.data?.user?.result?.legacy?.followers_count || 0,
+                    user_friends_count: userInfo?.friends_count || userInfo?.following_count || userInfo?.data?.user?.result?.legacy?.friends_count || 0,
+                    user_verified: userInfo?.verified || userInfo?.data?.user?.result?.legacy?.verified || userInfo?.data?.user?.result?.is_blue_verified || false,
+                    user_created_at: userInfo?.created_at || userInfo?.data?.user?.result?.legacy?.created_at || userInfo?.data?.user?.result?.core?.created_at || '',
+                    user_public_metrics: userInfo?.public_metrics || userInfo?.data?.user?.result?.legacy?.public_metrics || {}
+                  },
+                  selectedModel
                 );
               
                 console.log(`Individual tweet analysis for ${username}:`, analysisResult);
@@ -926,6 +1069,15 @@ const TwitterUserAnalysis = () => {
                 <option value={50}>50 records</option>
                 <option value={100}>100 records</option>
               </select>
+            </div>
+            
+            {/* Model Selection */}
+            <div className="flex-grow max-w-md">
+              <ModelSelector 
+                selectedModel={selectedModel}
+                onModelChange={setSelectedModel}
+                className="text-gray-300"
+              />
             </div>
             
             <div className="flex items-center space-x-3">

@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 # Add the parent directory to the path so we can import the model loader
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-from backend.app.model_loader import TwoStageModelLoader
+from backend.model_loader import TwoStageModelLoader
 
 def test_two_stage_model():
     # Path to the models

@@ -1,0 +1,6 @@
+---
+description: 
+globs: 
+alwaysApply: false
+---
+Never use mock data, use real data fetched from api's and databases.

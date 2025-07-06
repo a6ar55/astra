@@ -94,6 +94,21 @@ The API will be available at http://localhost:8000. Key endpoints include:
 - `/api/user/register` - Register or update a user
 - `/api/user/stats` - Get user-specific threat statistics
 - `/api/user/history` - Get user-specific analysis history
+- `/api/briefing/generate-ppt` - Generate PowerPoint presentation from threat reports (requires Gemini API)
+
+### New Briefing Feature
+
+The Briefing feature allows users to generate professional PowerPoint presentations from threat analysis reports:
+
+- **POST** `/api/briefing/generate-ppt` - Generate PowerPoint presentation
+  - Request body: `{"reportId": "threat-report"}`
+  - Returns: PPTX file download
+  - Features:
+    - AI-powered content structuring using Gemini 2.0 Flash
+    - Professional slide layouts with randomized styling
+    - Threat statistics visualization
+    - Security-focused presentation templates
+    - Speaker notes for presenter guidance
 
 See the Swagger documentation at `/docs` for complete API details.
 
@@ -141,4 +156,37 @@ users/
 
 You can configure the application using these environment variables:
 
-- `FIREBASE_CREDENTIALS`: Path to the Firebase service account credentials JSON file (default: `firebase-credentials.json`) 
+- `FIREBASE_CREDENTIALS`: Path to the Firebase service account credentials JSON file (default: `firebase-credentials.json`)
+- `GEMINI_API_KEY`: Your Google Gemini API key for PowerPoint generation (required for Briefing feature)
+
+### Setting up Gemini API for Briefing Feature
+
+The Briefing feature uses Google Gemini 2.0 Flash to generate PowerPoint presentations from threat reports. To enable this feature:
+
+1. Visit [Google AI Studio](https://aistudio.google.com/app/apikey)
+2. Sign in with your Google account
+3. Click "Create API Key" to generate a new key
+4. Create a `.env` file in the backend directory:
+
+```bash
+# Create .env file
+touch backend/.env
+```
+
+5. Add your Gemini API key to the `.env` file:
+
+```env
+# Gemini API Configuration
+GEMINI_API_KEY=your_actual_api_key_here
+
+# Firebase Configuration (if different from default)
+# FIREBASE_SERVICE_ACCOUNT_KEY_PATH=./firebase-credentials.json
+
+# API Configuration
+# API_HOST=localhost
+# API_PORT=8000
+```
+
+6. Restart the backend server to load the new environment variables
+
+**Note**: Keep your API key secure and never commit it to version control. The `.env` file should be included in your `.gitignore`. 

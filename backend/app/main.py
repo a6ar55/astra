@@ -43,25 +43,7 @@ class PredictionRequest(BaseModel):
 class BatchPredictionRequest(BaseModel):
     texts: List[str]
 
-class CaseCreateRequest(BaseModel):
-    title: str
-    summary: str
-    threatType: str  
-    target: str
-    status: str  # critical, high, medium, low
-    source: str
-    location: str
-    relatedCases: Optional[List[str]] = None
 
-class CaseUpdateRequest(BaseModel):
-    title: Optional[str] = None
-    summary: Optional[str] = None
-    threatType: Optional[str] = None
-    target: Optional[str] = None  
-    status: Optional[str] = None
-    source: Optional[str] = None
-    location: Optional[str] = None
-    relatedCases: Optional[List[str]] = None
 
 class EventCreateRequest(BaseModel):
     caseId: str
@@ -290,7 +272,7 @@ async def startup_event():
     else:
         logger.info("Two-stage models loaded successfully at startup")
     
-    # Load datasets for threat map and case management
+    # Load datasets for threat map
     load_datasets()
 
 # Health check endpoint

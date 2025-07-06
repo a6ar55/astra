@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { Link, useLocation } from 'react-router-dom'
-import { FaShieldAlt, FaBell, FaUserCircle, FaLock, FaCog, FaDatabase, FaChartBar, FaHeadset } from 'react-icons/fa'
+import { FaShieldAlt, FaBell, FaUserCircle, FaLock, FaCog, FaDatabase, FaChartBar, FaHeadset, FaFilePowerpoint } from 'react-icons/fa'
 import { UserButton, useUser } from '@clerk/clerk-react'
 
 const Header = ({ apiStatus, toggleSidebar }) => {
@@ -92,6 +92,11 @@ const Header = ({ apiStatus, toggleSidebar }) => {
               <Link to="/batch" className={`px-3 py-2 rounded-md text-sm font-medium ${location.pathname === '/batch' ? 'bg-slate-700 text-white' : 'text-slate-300 hover:bg-slate-700 hover:text-white'}`}>
                 <span className="flex items-center">
                   <FaDatabase className="mr-1.5" /> Batch Analysis
+                </span>
+              </Link>
+              <Link to="/briefing" className={`px-3 py-2 rounded-md text-sm font-medium ${location.pathname === '/briefing' ? 'bg-slate-700 text-white' : 'text-slate-300 hover:bg-slate-700 hover:text-white'}`}>
+                <span className="flex items-center">
+                  <FaFilePowerpoint className="mr-1.5" /> Briefing
                 </span>
               </Link>
               <Link to="/history" className={`px-3 py-2 rounded-md text-sm font-medium ${location.pathname === '/history' ? 'bg-slate-700 text-white' : 'text-slate-300 hover:bg-slate-700 hover:text-white'}`}>

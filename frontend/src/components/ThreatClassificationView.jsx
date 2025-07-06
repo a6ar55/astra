@@ -89,44 +89,70 @@ const ThreatClassificationView = ({ result }) => {
 
   // Process result data for charts
   useEffect(() => {
-    if (!result || !result.visualization_data) return;
+    if (!result) return;
 
     // Stage 1 data (binary classification)
-    if (result.visualization_data.stage1) {
-      const stage1 = result.visualization_data.stage1;
+    if (result.stage1_prediction || result.stage1_result || result.model_used === 'astra') {
+      let stage1Result = result.stage1_prediction || result.stage1_result;
+      let confidence;
+      
+      // For Astra model, use the overall confidence
+      if (result.model_used === 'astra') {
+        confidence = result.confidence || 0;
+        stage1Result = { confidence: confidence };
+      } else {
+        confidence = stage1Result?.confidence || 0;
+      }
+      
       setStage1Data({
-        labels: stage1.labels,
+        labels: ['Not a Threat', 'Threat'],
         datasets: [
           {
             label: 'Binary Classification',
-            data: stage1.values.map(v => (v * 100).toFixed(1)),
-            backgroundColor: stage1.labels.map(label => getThreatColor(label, 0.7)),
-            borderColor: stage1.labels.map(label => getThreatColor(label)),
+            data: result.threat ? [0, (confidence * 100).toFixed(1)] : [(confidence * 100).toFixed(1), 0],
+            backgroundColor: result.threat ? ['rgba(34, 197, 94, 0.7)', 'rgba(239, 68, 68, 0.7)'] : ['rgba(34, 197, 94, 0.7)', 'rgba(239, 68, 68, 0.7)'],
+            borderColor: result.threat ? ['rgb(34, 197, 94)', 'rgb(239, 68, 68)'] : ['rgb(34, 197, 94)', 'rgb(239, 68, 68)'],
             borderWidth: 1,
           },
         ],
       });
     }
 
-    // Stage 2 data (threat type classification)
-    if (result.visualization_data.stage2) {
-      const stage2 = result.visualization_data.stage2;
+    // Stage 2 data (threat type classification) - simplified for now
+    if (result.stage2_prediction || result.stage2_result || result.astra_prediction) {
+      let stage2Result = result.stage2_prediction || result.stage2_result;
+      let threatTypes = ['Hate Speech/Extremism', 'Direct Violence Threats', 'Harassment and Intimidation', 'Criminal Activity', 'Child Safety Threats'];
+      let confidenceData;
+      
+      // Handle Astra model predictions (single stage with all classes)
+      if (result.astra_prediction && result.class_probabilities) {
+        threatTypes = Object.keys(result.class_probabilities).filter(type => type !== 'Not a Threat');
+        confidenceData = threatTypes.map(type => (result.class_probabilities[type] * 100).toFixed(1));
+      } else if (stage2Result) {
+        // Handle DistilBERT stage 2 predictions
+        confidenceData = threatTypes.map(type => 
+          type === stage2Result.class ? (stage2Result.confidence * 100).toFixed(1) : 0
+        );
+      } else {
+        return; // No valid stage 2 data
+      }
+      
       setStage2Data({
-        labels: stage2.labels,
+        labels: threatTypes,
         datasets: [
           {
-            label: 'Threat Type',
-            data: stage2.values.map(v => (v * 100).toFixed(1)),
-            backgroundColor: stage2.labels.map(label => getThreatColor(label, 0.7)),
-            borderColor: stage2.labels.map(label => getThreatColor(label)),
+            label: result.model_used === 'astra' ? 'Threat Classification (Astra)' : 'Threat Type (DistilBERT)',
+            data: confidenceData,
+            backgroundColor: threatTypes.map(label => getThreatColor(label, 0.7)),
+            borderColor: threatTypes.map(label => getThreatColor(label)),
             borderWidth: 1,
           },
         ],
       });
     }
     
-    // Auto-show stage 2 if this is a threat
-    if (result.threat && result.stage === 2) {
+    // Auto-show stage 2/classification details if this is a threat
+    if (result.threat && (result.stage2_prediction || result.astra_prediction || result.model_used === 'astra')) {
       setShowStage2(true);
     } else {
       setShowStage2(false);
@@ -137,6 +163,7 @@ const ThreatClassificationView = ({ result }) => {
 
   // Get the severity color
   const getSeverityColor = (confidence) => {
+    if (!confidence) return 'bg-gray-500';
     const confValue = confidence * 100;
     if (confValue > 90) return 'bg-red-500';
     if (confValue > 70) return 'bg-orange-500';
@@ -147,7 +174,15 @@ const ThreatClassificationView = ({ result }) => {
     <div className="flex flex-col">
       <div className="mb-4 p-4 bg-slate-800 rounded-lg">
         <div className="flex justify-between items-center mb-4">
-          <h3 className="text-lg font-medium">Two-Stage Classification Results</h3>
+          <div>
+            <h3 className="text-lg font-medium">
+              {result.model_used === 'astra' ? 'Astra Single-Stage Classification' : 'DistilBERT Two-Stage Classification'}
+            </h3>
+            <div className="text-sm text-slate-400">
+              Model: {result.model_used === 'astra' ? 'Astra' : 'DistilBERT'} • 
+              Type: {result.model_type === 'single_stage' ? 'Single Stage' : 'Two Stage'}
+            </div>
+          </div>
           <div className="flex space-x-2">
             <button
               className={`px-2 py-1 rounded text-xs ${viewMode === 'bar' ? 'bg-indigo-600' : 'bg-slate-700'}`}
@@ -178,12 +213,12 @@ const ThreatClassificationView = ({ result }) => {
             <div className="flex items-center mt-1">
               <div className="flex-grow h-2 bg-slate-700 rounded-full overflow-hidden">
                 <div 
-                  className={getSeverityColor(result.stage1_result.confidence)}
-                  style={{ width: `${result.stage1_result.confidence * 100}%` }}
+                  className={getSeverityColor((result.stage1_prediction || result.stage1_result)?.confidence || result.confidence)}
+                  style={{ width: `${((result.stage1_prediction || result.stage1_result)?.confidence || result.confidence) * 100}%` }}
                 />
               </div>
               <span className="text-white font-medium ml-2">
-                {(result.stage1_result.confidence * 100).toFixed(1)}%
+                {(((result.stage1_prediction || result.stage1_result)?.confidence || result.confidence) * 100).toFixed(1)}%
               </span>
             </div>
           </div>
@@ -198,11 +233,13 @@ const ThreatClassificationView = ({ result }) => {
           </div>
         </div>
 
-        {/* Stage 2 Results */}
-        {result.threat && (
+        {/* Stage 2 Results or Astra Classification Details */}
+        {(result.threat && (result.stage2_prediction || result.astra_prediction)) && (
           <div className="mt-6 pt-4 border-t border-slate-700">
             <div className="flex items-center justify-between mb-2">
-              <h4 className="font-medium">Stage 2: Threat Type Classification</h4>
+              <h4 className="font-medium">
+                {result.model_used === 'astra' ? 'Classification Details' : 'Stage 2: Threat Type Classification'}
+              </h4>
               <button
                 className={`px-2 py-1 rounded text-xs ${showStage2 ? 'bg-indigo-600' : 'bg-slate-700'}`}
                 onClick={() => setShowStage2(!showStage2)}
@@ -215,7 +252,7 @@ const ThreatClassificationView = ({ result }) => {
               <>
                 <div className="mb-2">
                   <div className="text-sm text-slate-400 mb-1">Threat Type</div>
-                  <div className="font-medium text-white">{result.stage2_result.predicted_class}</div>
+                  <div className="font-medium text-white">{(result.stage2_prediction || result.stage2_result)?.class || result.predicted_class}</div>
                 </div>
                 
                 <div className="mb-4">
@@ -223,12 +260,12 @@ const ThreatClassificationView = ({ result }) => {
                   <div className="flex items-center mt-1">
                     <div className="flex-grow h-2 bg-slate-700 rounded-full overflow-hidden">
                       <div 
-                        className={getSeverityColor(result.stage2_result.confidence)}
-                        style={{ width: `${result.stage2_result.confidence * 100}%` }}
+                        className={getSeverityColor((result.stage2_prediction || result.stage2_result)?.confidence || result.confidence)}
+                        style={{ width: `${((result.stage2_prediction || result.stage2_result)?.confidence || result.confidence) * 100}%` }}
                       />
                     </div>
                     <span className="text-white font-medium ml-2">
-                      {(result.stage2_result.confidence * 100).toFixed(1)}%
+                      {(((result.stage2_prediction || result.stage2_result)?.confidence || result.confidence) * 100).toFixed(1)}%
                     </span>
                   </div>
                 </div>
@@ -265,11 +302,11 @@ const ThreatClassificationView = ({ result }) => {
             <div className="flex-grow h-3 bg-slate-700 rounded-full overflow-hidden">
               <div 
                 className={getSeverityColor(result.confidence)}
-                style={{ width: `${result.confidence * 100}%` }}
+                style={{ width: `${(result.confidence || 0) * 100}%` }}
               />
             </div>
             <span className="text-white font-medium ml-2 text-lg">
-              {(result.confidence * 100).toFixed(1)}%
+              {((result.confidence || 0) * 100).toFixed(1)}%
             </span>
           </div>
         </div>

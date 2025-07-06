@@ -1,6 +1,7 @@
 """
 Chat Service for Threat Analysis AI Assistant
-Integrates with Google Gemini AI and RAG system for intelligent threat analysis conversations
+Integrates with Google Gemini and RAG system for intelligent threat analysis conversations
+Enhanced with web search capabilities for real-time information retrieval
 """
 
 import os
@@ -10,6 +11,7 @@ import requests
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 from dotenv import load_dotenv
+import google.generativeai as genai
 
 # Load environment variables
 load_dotenv()
@@ -21,13 +23,15 @@ logger = logging.getLogger(__name__)
 
 class ThreatAnalysisAI:
     def __init__(self):
-        """Initialize the Threat Analysis AI with OpenRouter API."""
-        self.api_key = os.getenv('OPENROUTER_API_KEY')
+        """Initialize the Threat Analysis AI with Google Gemini."""
+        self.api_key = os.getenv('GEMINI_API_KEY')
         if not self.api_key:
-            raise ValueError("OPENROUTER_API_KEY not found in environment variables")
+            raise ValueError("GEMINI_API_KEY not found in environment variables")
         
-        self.base_url = "https://openrouter.ai/api/v1/chat/completions"
-        self.model = "meta-llama/llama-3.1-8b-instruct:free"  # Using free fast model
+        genai.configure(api_key=self.api_key)
+        
+        self.model_name = "gemini-1.5-flash" 
+        self.model = genai.GenerativeModel(self.model_name)
         self.conversation_history = []
         
         # Advanced threat analysis system prompt
@@ -64,102 +68,27 @@ class ThreatAnalysisAI:
 
 Remember: You are analyzing real threat data to protect organizations and infrastructure. Accuracy and actionability are paramount."""
 
+    def _make_gemini_request(self, messages: List[Dict]) -> str:
+        """Make a request to the Google Gemini API."""
+        try:
+            full_prompt = self.system_prompt + "\n\n" + "\n".join([f"{m['role']}: {m['content']}" for m in messages])
+            
+            logger.info(f"Making request to Gemini API with model {self.model_name}...")
+            response = self.model.generate_content(full_prompt)
+            
+            if response.text:
+                return response.text.strip()
+            else:
+                logger.error(f"Unexpected empty response from Gemini: {response}")
+                return "I received an empty response. Please try again."
+                
+        except Exception as e:
+            logger.error(f"Error in Gemini request: {str(e)}")
+            return f"I'm experiencing technical difficulties with the AI service. Please try again in a moment. Error: {str(e)}"
+
     def _make_request(self, messages: List[Dict]) -> str:
-        """Make a request to the OpenRouter API with retry logic."""
-        max_retries = 3
-        retry_delay = 2  # seconds
-        
-        for attempt in range(max_retries):
-            try:
-                # Prepare the messages in OpenAI format
-                openai_messages = [
-                    {"role": "system", "content": self.system_prompt}
-                ]
-                
-                # Add conversation history and current message
-                for msg in messages:
-                    openai_messages.append({
-                        "role": msg['role'],
-                        "content": msg['content']
-                    })
-                
-                # Prepare the request payload for OpenRouter
-                payload = {
-                    "model": self.model,
-                    "messages": openai_messages,
-                    "temperature": 0.3,
-                    "max_tokens": 1500,  # Slightly reduced for faster responses
-                    "top_p": 0.9
-                }
-                
-                # Make the API request
-                headers = {
-                    'Authorization': f'Bearer {self.api_key}',
-                    'HTTP-Referer': 'https://threat-detection-platform.local',
-                    'X-Title': 'Threat Detection Platform',
-                    'Content-Type': 'application/json'
-                }
-                
-                logger.info(f"Making request to OpenRouter API with GPT-4o...")
-                response = requests.post(self.base_url, headers=headers, json=payload, timeout=15)  # Faster timeout for GPT-4o
-                
-                if response.status_code == 200:
-                    result = response.json()
-                    
-                    # Extract the generated text from OpenRouter's response
-                    if 'choices' in result and len(result['choices']) > 0:
-                        choice = result['choices'][0]
-                        if 'message' in choice and 'content' in choice['message']:
-                            return choice['message']['content'].strip()
-                    
-                    logger.error(f"Unexpected response format from OpenRouter: {result}")
-                    return "I received an unexpected response format. Please try again."
-                    
-                else:
-                    logger.error(f"OpenRouter API error {response.status_code}: {response.text}")
-                    if response.status_code == 400:
-                        return "I encountered an issue processing your request. Please check if your message is appropriate and try again."
-                    elif response.status_code == 401:
-                        return "API access denied. Please check your OpenRouter API key."
-                    elif response.status_code == 402:
-                        return "Insufficient credits. Please add credits to your OpenRouter account at https://openrouter.ai/settings/credits"
-                    elif response.status_code == 403:
-                        return "API access forbidden. Please check your OpenRouter API key permissions."
-                    elif response.status_code == 429 and attempt < max_retries - 1:
-                        logger.warning(f"Rate limit exceeded - attempt {attempt + 1}/{max_retries}. Retrying in {retry_delay}s...")
-                        import time
-                        time.sleep(retry_delay)
-                        continue
-                    elif response.status_code == 503 and attempt < max_retries - 1:
-                        logger.warning(f"OpenRouter API overloaded (503) - attempt {attempt + 1}/{max_retries}. Retrying in {retry_delay}s...")
-                        import time
-                        time.sleep(retry_delay)
-                        continue
-                    else:
-                        return f"I'm experiencing technical difficulties (Error {response.status_code}). Please try again in a moment."
-                        
-            except requests.exceptions.Timeout:
-                if attempt < max_retries - 1:
-                    logger.warning(f"Request timeout - attempt {attempt + 1}/{max_retries}. Retrying...")
-                    import time
-                    time.sleep(retry_delay)
-                    continue
-                logger.error("Request to OpenRouter API timed out after retries")
-                return "The request timed out. Please try again with a shorter message."
-            except requests.exceptions.RequestException as e:
-                if attempt < max_retries - 1:
-                    logger.warning(f"Request error - attempt {attempt + 1}/{max_retries}: {str(e)}")
-                    import time
-                    time.sleep(retry_delay)
-                    continue
-                logger.error(f"Request error after retries: {str(e)}")
-                return "I'm experiencing network connectivity issues. Please try again."
-            except Exception as e:
-                logger.error(f"Unexpected error in OpenRouter request: {str(e)}")
-                return "An unexpected error occurred. Please try again."
-        
-        # If we get here, all retries failed
-        return "Service is temporarily overloaded. Please try again in a few minutes."
+        """Main request handler, now points to Gemini."""
+        return self._make_gemini_request(messages)
 
     def analyze_with_context(self, user_message: str, context_text: str = None) -> str:
         """
@@ -198,6 +127,45 @@ Remember: You are analyzing real threat data to protect organizations and infras
         except Exception as e:
             logger.error(f"Error in analyze_with_context: {str(e)}")
             return "I apologize, but I encountered an error while processing your request. Please try again."
+
+    def analyze_with_web_context(self, user_message: str, rag_context: str = None, web_context: str = None) -> str:
+        """
+        Analyze user query with both RAG context and web search context
+        
+        Args:
+            user_message: The user's question or request
+            rag_context: Optional RAG context from existing reports
+            web_context: Optional web search context from real-time search
+        
+        Returns:
+            AI-generated analysis and response with web-enhanced information
+        """
+        try:
+            # Prepare enhanced message with both contexts
+            enhanced_message = self._prepare_web_enhanced_message(user_message, rag_context, web_context)
+            
+            # Prepare conversation messages
+            messages = self.conversation_history + [
+                {"role": "user", "content": enhanced_message}
+            ]
+            
+            # Get AI response
+            response = self._make_request(messages)
+            
+            # Update conversation history
+            self.conversation_history.append({"role": "user", "content": user_message})
+            self.conversation_history.append({"role": "assistant", "content": response})
+            
+            # Keep conversation history manageable
+            if len(self.conversation_history) > 20:
+                self.conversation_history = self.conversation_history[-20:]
+            
+            logger.info(f"Generated web-enhanced response for user query: {user_message[:100]}...")
+            return response
+            
+        except Exception as e:
+            logger.error(f"Error in analyze_with_web_context: {str(e)}")
+            return "I apologize, but I encountered an error while processing your web-enhanced request. Please try again."
 
     def _prepare_contextual_message(self, user_message: str, context_data: List[Dict] = None) -> str:
         """Prepare an enhanced message with RAG context using advanced prompting."""
@@ -285,6 +253,76 @@ Focus on actionable insights directly tied to the provided intelligence. Maintai
 
         return enhanced_message
 
+    def _prepare_web_enhanced_message(self, user_message: str, rag_context: str = None, web_context: str = None) -> str:
+        """Prepare an enhanced message with both RAG and web search context."""
+        
+        # Build context sections
+        context_sections = []
+        
+        if rag_context and "No relevant threat intelligence found" not in rag_context:
+            context_sections.append("=== INTERNAL THREAT INTELLIGENCE ===")
+            context_sections.append(rag_context)
+            context_sections.append("")
+        
+        if web_context and "No relevant web content found" not in web_context:
+            context_sections.append("=== REAL-TIME WEB INTELLIGENCE ===")
+            context_sections.append(web_context)
+            context_sections.append("")
+        
+        # Determine context status
+        has_internal_context = bool(rag_context and "No relevant threat intelligence found" not in rag_context)
+        has_web_context = bool(web_context and "No relevant web content found" not in web_context)
+        
+        if not has_internal_context and not has_web_context:
+            return f"""THREAT ANALYSIS REQUEST:
+
+USER QUERY: {user_message}
+
+CONTEXT STATUS: No specific threat reports or web intelligence found for this query.
+
+ANALYSIS INSTRUCTIONS:
+Please provide general threat intelligence guidance based on your training and cybersecurity best practices. Apply the SENTINEL-AI framework:
+
+1. ANALYZE the user's question from a cybersecurity perspective
+2. CORRELATE with general threat intelligence patterns
+3. ASSESS potential security implications
+4. RECOMMEND actionable security measures
+5. PRIORITIZE recommendations by importance
+
+Maintain a professional security analyst perspective and provide practical, actionable advice."""
+
+        # Enhanced message with available context
+        enhanced_message = f"""ENHANCED THREAT ANALYSIS REQUEST WITH MULTI-SOURCE INTELLIGENCE:
+
+USER QUERY: {user_message}
+
+AVAILABLE INTELLIGENCE SOURCES:
+- Internal Database: {'✓ Available' if has_internal_context else '✗ No relevant data'}
+- Real-time Web Search: {'✓ Available' if has_web_context else '✗ No relevant data'}
+
+{chr(10).join(context_sections)}
+
+COMPREHENSIVE ANALYSIS INSTRUCTIONS:
+You have access to both internal threat intelligence and real-time web information. Apply the enhanced SENTINEL-AI framework:
+
+1. ANALYZE the user's question using ALL available intelligence sources
+2. CORRELATE patterns between internal reports and current web information
+3. ASSESS implications considering both historical data and real-time context
+4. RECOMMEND specific actions derived from comprehensive intelligence
+5. PRIORITIZE recommendations with appropriate severity indicators
+
+IMPORTANT GUIDELINES:
+- Synthesize information from both internal and web sources
+- Highlight any discrepancies or complementary information
+- Provide source attribution when referencing specific intelligence
+- Focus on actionable insights backed by evidence
+- Maintain professional security analyst perspective
+- Note the recency and reliability of web sources vs. internal data
+
+Generate a comprehensive threat analysis that leverages all available intelligence."""
+
+        return enhanced_message
+
     def get_conversation_history(self) -> List[Dict]:
         """Get the current conversation history."""
         return self.conversation_history.copy()
@@ -295,26 +333,27 @@ Focus on actionable insights directly tied to the provided intelligence. Maintai
         logger.info("Conversation history cleared")
 
     def health_check(self) -> Dict[str, Any]:
-        """Check if the OpenRouter AI service is healthy."""
+        """Check if the Google Gemini service is healthy."""
         try:
             # Simple test request
-            test_messages = [{"role": "user", "content": "Health check - respond with 'OK'"}]
-            response = self._make_request(test_messages)
+            response = self.model.generate_content("Health check - respond with 'OK'")
             
-            is_healthy = "OK" in response or len(response) > 0
+            is_healthy = response.text and "OK" in response.text
             
             return {
                 "status": "healthy" if is_healthy else "unhealthy",
-                "service": "OpenRouter AI",
+                "service": "Google Gemini",
+                "model": self.model_name,
                 "timestamp": datetime.now().isoformat(),
-                "response_received": bool(response),
+                "response_received": bool(response.text),
                 "api_key_configured": bool(self.api_key)
             }
         except Exception as e:
             logger.error(f"Health check failed: {str(e)}")
             return {
                 "status": "unhealthy",
-                "service": "OpenRouter AI", 
+                "service": "Google Gemini", 
+                "model": self.model_name,
                 "timestamp": datetime.now().isoformat(),
                 "error": str(e),
                 "api_key_configured": bool(self.api_key)

@@ -320,6 +320,10 @@ def add_analysis_to_history(user_id, text_input, analysis_result):
             history_item_data['source'] = 'twitter'
         else:
             history_item_data['source'] = 'direct_input'
+            
+        # Include user metadata if present
+        if 'user_metadata' in analysis_result:
+            history_item_data['user_metadata'] = analysis_result['user_metadata']
         
         # Add any additional fields
         for key, value in analysis_result.items():

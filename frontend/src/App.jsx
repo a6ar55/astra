@@ -11,13 +11,14 @@ import TwitterThreats from './pages/TwitterThreats'
 import TwitterUserAnalysis from './pages/TwitterUserAnalysis'
 import SummaryReport from './pages/SummaryReport'
 import ThreatReport from './pages/ThreatReport'
+import ThreatMap from './pages/ThreatMap'
 import ThreatChatAI from './components/ThreatChatAI'
+import Briefing from './pages/Briefing'
+import FIRs from './pages/FIRs'
 import { toast } from 'react-toastify'
 import axios from 'axios'
 import { ToastContainer } from 'react-toastify'
 import 'react-toastify/dist/ReactToastify.css'
-import CaseManagement from './pages/CaseManagement'
-import ThreatMap from './pages/ThreatMap'
 import {
   SignedIn,
   SignedOut,
@@ -545,12 +546,14 @@ function App() {
                 } />
             <Route path="/batch" element={<BatchAnalysis apiStatus={apiStatus} addToHistory={addToHistory} />} />
                 <Route path="/history" element={<History history={history} clearHistory={clearHistory} />} />
-            <Route path="/cases" element={<CaseManagement />} />
+
             <Route path="/threat-map" element={<ThreatMap />} />
+            <Route path="/briefing" element={<Briefing />} />
             <Route path="/settings" element={<Settings />} />
-                <Route path="/social-media/search" element={<TwitterSearch addToHistory={addToHistory} />} />
-                <Route path="/social-media/threats" element={<TwitterThreats />} />
-                <Route path="/social-media/user-analysis" element={<TwitterUserAnalysis addToHistory={addToHistory} />} />
+                            <Route path="/social-media/search" element={<TwitterSearch addToHistory={addToHistory} />} />
+            <Route path="/social-media/threats" element={<TwitterThreats />} />
+            <Route path="/social-media/user-analysis" element={<TwitterUserAnalysis addToHistory={addToHistory} />} />
+            <Route path="/firs" element={<FIRs />} />
                 <Route path="/reports/summary" element={<SummaryReport />} />
                 <Route path="/reports/threat" element={<ThreatReport />} />
                 <Route path="/chat" element={<ThreatChatAI />} />

@@ -164,7 +164,7 @@ const Settings = () => {
                         onChange={(e) => handleSettingChange('general', 'defaultPage', e.target.value)}
                       >
                         <option value="dashboard">Dashboard</option>
-                        <option value="cases">Case Management</option>
+        
                         <option value="threat-map">Threat Map</option>
                         <option value="batch">Batch Analysis</option>
                       </select>

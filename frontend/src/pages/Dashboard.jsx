@@ -3,6 +3,7 @@ import axios from 'axios'
 import { toast } from 'react-toastify'
 import ThreatChart from '../components/ThreatChart'
 import ThreatClassificationView from '../components/ThreatClassificationView'
+import ModelSelector from '../components/ModelSelector'
 import { useUser } from '@clerk/clerk-react'
 import { exportAsCSV, prepareThreatDataForExport, exportAsJson } from '../utils/exportUtils'
 import { generateThreatReport, generateSummaryReport } from '../utils/reportUtils'
@@ -20,7 +21,8 @@ import {
   FaFlag,
   FaUserShield,
   FaDatabase,
-  FaHistory
+  FaHistory,
+  FaSync
 } from 'react-icons/fa'
 import { motion, AnimatePresence } from 'framer-motion'
 
@@ -32,6 +34,7 @@ const Dashboard = ({ apiStatus, addToHistory, userStats, userCategories }) => {
   
   const [text, setText] = useState('')
   const [result, setResult] = useState(null)
+  const [selectedModel, setSelectedModel] = useState('distilbert')
   
   // Use userStats from props if available, otherwise use local state as fallback
   const [threatStats, setThreatStats] = useState({
@@ -273,7 +276,10 @@ const Dashboard = ({ apiStatus, addToHistory, userStats, userCategories }) => {
       }
       
       console.log("Sending request to /api/predict with headers:", headers)
-      const response = await axios.post('/api/predict', { text }, { headers })
+      const response = await axios.post('/api/predict', { 
+        text, 
+        model_type: selectedModel 
+      }, { headers })
       
       console.log("Received response from prediction:", response.data)
       
@@ -524,6 +530,31 @@ const Dashboard = ({ apiStatus, addToHistory, userStats, userCategories }) => {
     }
   };
 
+  // Function to recalculate threat categories
+  const handleRecalculateCategories = async () => {
+    if (!userId || userId === 'anonymous') {
+      toast.error('Sign in to recalculate categories');
+      return;
+    }
+    
+    try {
+      setDataLoading(true);
+      const response = await axios.post('/api/user/categories/recalculate', {}, {
+        headers: { 'user_id': userId }
+      });
+      
+      if (response.data.success) {
+        setThreatCategories(response.data.categories);
+        toast.success('Threat categories recalculated successfully!');
+      }
+    } catch (error) {
+      console.error('Error recalculating categories:', error);
+      toast.error('Failed to recalculate categories');
+    } finally {
+      setDataLoading(false);
+    }
+  };
+
   // Update saveToLocalStorage to be more comprehensive
   const saveToLocalStorage = (analysisResult) => {
     if (!analysisResult) return;
@@ -646,12 +677,7 @@ const Dashboard = ({ apiStatus, addToHistory, userStats, userCategories }) => {
             >
               <FaDatabase className="mr-1.5" /> Export Data
             </button>
-            <button 
-              className="btn btn-sm btn-secondary"
-              onClick={() => handleGenerateReport()}
-            >
-              <FaRegFilePdf className="mr-1.5" /> Generate Report
-            </button>
+
           </div>
         </div>
         <p className="text-slate-400 max-w-3xl">
@@ -762,7 +788,20 @@ const Dashboard = ({ apiStatus, addToHistory, userStats, userCategories }) => {
         transition={{ delay: 0.3, duration: 0.5 }}
         className="mb-8"
       >
-        <h2 className="text-xl font-bold mb-4 text-white">Threat Categories Distribution</h2>
+        <div className="flex items-center justify-between mb-4">
+          <h2 className="text-xl font-bold text-white">Threat Categories Distribution</h2>
+          {userId && userId !== 'anonymous' && (
+            <button 
+              className="btn btn-sm btn-outline btn-secondary"
+              onClick={handleRecalculateCategories}
+              disabled={dataLoading}
+              title="Recalculate categories from analysis history"
+            >
+              <FaSync className={`mr-1.5 ${dataLoading ? 'animate-spin' : ''}`} />
+              {dataLoading ? 'Recalculating...' : 'Fix Categories'}
+            </button>
+          )}
+        </div>
         <div className="grid grid-cols-1 md:grid-cols-5 gap-4">
           {threatCategories.map((category, index) => (
             <div key={index} className="card bg-slate-800 shadow">
@@ -826,6 +865,14 @@ const Dashboard = ({ apiStatus, addToHistory, userStats, userCategories }) => {
                 </div>
               </div>
               
+              {/* Model Selection */}
+              <div className="mb-4">
+                <ModelSelector 
+                  selectedModel={selectedModel}
+                  onModelChange={setSelectedModel}
+                />
+              </div>
+              
               <div className="flex items-center space-x-3">
                 <button
                   type="submit"
@@ -856,9 +903,7 @@ const Dashboard = ({ apiStatus, addToHistory, userStats, userCategories }) => {
                 
                 <div className="flex-grow"></div>
                 
-                <div className="badge badge-slate">
-                  <FaFingerprint className="mr-1.5" /> Secure Analysis
-                </div>
+                
               </div>
             </form>
           </div>
