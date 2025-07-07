@@ -15,6 +15,7 @@ import ThreatMap from './pages/ThreatMap'
 import ThreatChatAI from './components/ThreatChatAI'
 import Briefing from './pages/Briefing'
 import FIRs from './pages/FIRs'
+import LegalAnalysis from './pages/LegalAnalysis'
 import { toast } from 'react-toastify'
 import axios from 'axios'
 import { ToastContainer } from 'react-toastify'
@@ -554,6 +555,7 @@ function App() {
             <Route path="/social-media/threats" element={<TwitterThreats />} />
             <Route path="/social-media/user-analysis" element={<TwitterUserAnalysis addToHistory={addToHistory} />} />
             <Route path="/firs" element={<FIRs />} />
+            <Route path="/legal-analysis" element={<LegalAnalysis />} />
                 <Route path="/reports/summary" element={<SummaryReport />} />
                 <Route path="/reports/threat" element={<ThreatReport />} />
                 <Route path="/chat" element={<ThreatChatAI />} />

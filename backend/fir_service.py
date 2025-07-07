@@ -4,12 +4,7 @@ import uuid
 from datetime import datetime, timezone
 from typing import Dict, Any, Optional, List
 import logging
-from reportlab.lib.pagesizes import letter, A4
-from reportlab.platypus import SimpleDocTemplate, Paragraph, Spacer, Table, TableStyle, PageBreak
-from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib.units import inch
-from reportlab.lib import colors
-from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_JUSTIFY
+
 import firebase_admin
 from firebase_admin import firestore
 
@@ -18,8 +13,6 @@ logger = logging.getLogger(__name__)
 class FIRService:
     def __init__(self):
         self.db = None
-        self.styles = getSampleStyleSheet()
-        self._setup_custom_styles()
     
     def _get_db(self):
         """Lazy initialization of Firestore client"""
@@ -31,59 +24,6 @@ class FIRService:
                 raise
         return self.db
     
-    def _setup_custom_styles(self):
-        """Setup custom styles for NYPD FIR format"""
-        # NYPD Header Style
-        self.styles.add(ParagraphStyle(
-            name='NYPDHeader',
-            parent=self.styles['Heading1'],
-            fontSize=18,
-            spaceAfter=30,
-            alignment=TA_CENTER,
-            textColor=colors.darkblue,
-            fontName='Helvetica-Bold'
-        ))
-        
-        # Section Header Style
-        self.styles.add(ParagraphStyle(
-            name='SectionHeader',
-            parent=self.styles['Heading2'],
-            fontSize=14,
-            spaceAfter=12,
-            spaceBefore=20,
-            textColor=colors.darkblue,
-            fontName='Helvetica-Bold'
-        ))
-        
-        # Field Label Style
-        self.styles.add(ParagraphStyle(
-            name='FieldLabel',
-            parent=self.styles['Normal'],
-            fontSize=10,
-            spaceAfter=6,
-            textColor=colors.darkblue,
-            fontName='Helvetica-Bold'
-        ))
-        
-        # Field Value Style
-        self.styles.add(ParagraphStyle(
-            name='FieldValue',
-            parent=self.styles['Normal'],
-            fontSize=10,
-            spaceAfter=12,
-            fontName='Helvetica'
-        ))
-        
-        # Narrative Style
-        self.styles.add(ParagraphStyle(
-            name='Narrative',
-            parent=self.styles['Normal'],
-            fontSize=10,
-            spaceAfter=12,
-            alignment=TA_JUSTIFY,
-            fontName='Helvetica'
-        ))
-
     def generate_fir_id(self) -> str:
         """Generate unique FIR ID in NYPD format"""
         timestamp = datetime.now().strftime("%Y%m%d%H%M%S")
@@ -225,21 +165,11 @@ appropriate law enforcement response based on the nature and severity of the thr
         return narrative.strip()
 
     async def create_fir(self, threat_data: Dict[str, Any], user_id: str) -> Dict[str, Any]:
-        """Create a new FIR and store in Firebase"""
-        try:
-            fir_content = self.generate_fir_content(threat_data, user_id)
-            
-            # Store in Firebase
-            db = self._get_db()
-            fir_ref = db.collection('firs').document(fir_content['fir_id'])
-            fir_ref.set(fir_content)
-            
-            logger.info(f"FIR created successfully: {fir_content['fir_id']}")
-            return fir_content
-            
-        except Exception as e:
-            logger.error(f"Error creating FIR: {e}")
-            raise
+        """Create FIR and save to Firebase"""
+        fir_content = self.generate_fir_content(threat_data, user_id)
+        db = self._get_db()
+        db.collection('firs').document(fir_content['fir_id']).set(fir_content)
+        return fir_content
 
     async def get_user_firs(self, user_id: str, limit: int = 50) -> List[Dict[str, Any]]:
         """Get all FIRs for a user"""
@@ -299,110 +229,6 @@ appropriate law enforcement response based on the nature and severity of the thr
             
         except Exception as e:
             logger.error(f"Error updating FIR status: {e}")
-            raise
-
-    def generate_pdf(self, fir_data: Dict[str, Any]) -> str:
-        """Generate PDF file for FIR"""
-        try:
-            # Create temporary file path
-            fir_id = fir_data['fir_id']
-            filename = f"FIR_{fir_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
-            filepath = os.path.join('/tmp', filename)
-            
-            # Create PDF document
-            doc = SimpleDocTemplate(filepath, pagesize=letter)
-            story = []
-            
-            # Add NYPD Header
-            story.append(Paragraph("NEW YORK CITY POLICE DEPARTMENT", self.styles['NYPDHeader']))
-            story.append(Paragraph("FIRST INFORMATION REPORT", self.styles['NYPDHeader']))
-            story.append(Spacer(1, 20))
-            
-            # FIR ID and Date
-            story.append(Paragraph(f"FIR ID: {fir_data['fir_id']}", self.styles['FieldLabel']))
-            story.append(Paragraph(f"Date: {fir_data['timestamp'].strftime('%B %d, %Y')}", self.styles['FieldValue']))
-            story.append(Paragraph(f"Time: {fir_data['timestamp'].strftime('%I:%M %p')}", self.styles['FieldValue']))
-            story.append(Spacer(1, 20))
-            
-            # Incident Information
-            story.append(Paragraph("INCIDENT INFORMATION", self.styles['SectionHeader']))
-            
-            incident_data = [
-                ['Incident Type:', 'Social Media Threat'],
-                ['Platform:', 'Twitter'],
-                ['Threat Classification:', fir_data['content']['threat_classification']],
-                ['Severity Level:', fir_data['severity']],
-                ['Confidence Score:', f"{round(fir_data['content']['confidence_score'] * 100)}%"],
-                ['Status:', fir_data['status']]
-            ]
-            
-            incident_table = Table(incident_data, colWidths=[2*inch, 4*inch])
-            incident_table.setStyle(TableStyle([
-                ('BACKGROUND', (0, 0), (0, -1), colors.lightgrey),
-                ('TEXTCOLOR', (0, 0), (-1, -1), colors.black),
-                ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
-                ('FONTNAME', (0, 0), (-1, -1), 'Helvetica'),
-                ('FONTSIZE', (0, 0), (-1, -1), 10),
-                ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
-                ('GRID', (0, 0), (-1, -1), 1, colors.black)
-            ]))
-            
-            story.append(incident_table)
-            story.append(Spacer(1, 20))
-            
-            # Suspect Information
-            story.append(Paragraph("SUSPECT INFORMATION", self.styles['SectionHeader']))
-            
-            suspect_info = fir_data['content']['suspect_info']
-            suspect_data = [
-                ['Username:', f"@{suspect_info['username']}"],
-                ['Display Name:', suspect_info['display_name']],
-                ['Location:', f"{suspect_info['location']['city']}, {suspect_info['location']['state']}"],
-                ['Followers:', str(suspect_info.get('followers_count', 'Unknown'))],
-                ['Account Created:', suspect_info.get('account_created', 'Unknown')]
-            ]
-            
-            suspect_table = Table(suspect_data, colWidths=[2*inch, 4*inch])
-            suspect_table.setStyle(TableStyle([
-                ('BACKGROUND', (0, 0), (0, -1), colors.lightgrey),
-                ('TEXTCOLOR', (0, 0), (-1, -1), colors.black),
-                ('ALIGN', (0, 0), (-1, -1), 'LEFT'),
-                ('FONTNAME', (0, 0), (-1, -1), 'Helvetica'),
-                ('FONTSIZE', (0, 0), (-1, -1), 10),
-                ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
-                ('GRID', (0, 0), (-1, -1), 1, colors.black)
-            ]))
-            
-            story.append(suspect_table)
-            story.append(Spacer(1, 20))
-            
-            # Threat Details
-            story.append(Paragraph("THREAT DETAILS", self.styles['SectionHeader']))
-            story.append(Paragraph("Threatening Content:", self.styles['FieldLabel']))
-            story.append(Paragraph(fir_data['content']['threat_details']['content'], self.styles['FieldValue']))
-            
-            if fir_data['content']['threat_details'].get('tweet_id'):
-                story.append(Paragraph(f"Tweet ID: {fir_data['content']['threat_details']['tweet_id']}", self.styles['FieldValue']))
-            
-            story.append(Spacer(1, 20))
-            
-            # Narrative
-            story.append(Paragraph("NARRATIVE", self.styles['SectionHeader']))
-            story.append(Paragraph(fir_data['content']['narrative'], self.styles['Narrative']))
-            story.append(Spacer(1, 30))
-            
-            # Footer
-            story.append(Paragraph("Generated by Astra Threat Detection System", self.styles['FieldValue']))
-            story.append(Paragraph(f"Report ID: {fir_data['fir_id']}", self.styles['FieldValue']))
-            
-            # Build PDF
-            doc.build(story)
-            
-            logger.info(f"PDF generated successfully: {filepath}")
-            return filepath
-            
-        except Exception as e:
-            logger.error(f"Error generating PDF: {e}")
             raise
 
 # Global FIR service instance

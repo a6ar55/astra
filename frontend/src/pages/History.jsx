@@ -1,9 +1,10 @@
 import { useState, useEffect } from 'react'
-import { FaTrash, FaExclamationTriangle, FaShieldAlt, FaSearch, FaDownload, FaSync } from 'react-icons/fa'
+import { FaTrash, FaExclamationTriangle, FaShieldAlt, FaSearch, FaDownload, FaSync, FaBalanceScale } from 'react-icons/fa'
 import ThreatChart from '../components/ThreatChart'
 import { exportAsCSV, prepareThreatDataForExport, exportAsJson } from '../utils/exportUtils'
 import { toast } from 'react-toastify'
 import axios from 'axios'
+import apiService from '../services/apiService'
 
 const History = ({ history: propHistory, clearHistory }) => {
   // Use internal state to manage history data
@@ -12,6 +13,7 @@ const History = ({ history: propHistory, clearHistory }) => {
   const [searchTerm, setSearchTerm] = useState('')
   const [selectedResult, setSelectedResult] = useState(null)
   const [filterType, setFilterType] = useState('all')
+  const [analyzingLegalIds, setAnalyzingLegalIds] = useState(new Set())
   
   // Sync with prop history when it changes
   useEffect(() => {
@@ -140,6 +142,64 @@ const History = ({ history: propHistory, clearHistory }) => {
     }
   }
 
+  // Function to analyze legal implications
+  const analyzeLegalImplications = async (content, threatClass, itemId) => {
+    if (!content || !threatClass) {
+      toast.error('Content and threat class are required for legal analysis')
+      return
+    }
+
+    try {
+      setAnalyzingLegalIds(prev => new Set([...prev, itemId]))
+      toast.info('Analyzing legal implications...')
+      
+      // Log the request details
+      console.log('🔍 Legal Analysis Request:', {
+        content: content,
+        threat_class: threatClass,
+        itemId: itemId,
+        timestamp: new Date().toISOString()
+      })
+      
+      const result = await apiService.analyzeLegalImplications(content, threatClass)
+      
+      // Log the response details
+      console.log('📋 Legal Analysis Response:', {
+        status: result.status,
+        legal_analysis: result.legal_analysis,
+        threat_class: result.threat_class,
+        legal_label: result.legal_label,
+        timestamp: result.timestamp,
+        full_response: result
+      })
+      
+      if (result.status === 'success') {
+        toast.success('Legal analysis completed! Check the Legal Analysis section in the sidebar.')
+        // Optionally navigate to legal analysis page
+        // window.location.href = '/legal-analysis'
+      } else {
+        toast.error('Legal analysis failed')
+      }
+    } catch (error) {
+      console.error('❌ Error analyzing legal implications:', {
+        error: error,
+        message: error.message,
+        response: error.response?.data,
+        status: error.response?.status,
+        itemId: itemId,
+        content: content,
+        threatClass: threatClass
+      })
+      toast.error('Failed to analyze legal implications')
+    } finally {
+      setAnalyzingLegalIds(prev => {
+        const newSet = new Set(prev)
+        newSet.delete(itemId)
+        return newSet
+      })
+    }
+  }
+
   return (
     <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-6">
       <div className="flex justify-between items-center mb-6">
@@ -251,9 +311,32 @@ const History = ({ history: propHistory, clearHistory }) => {
                       {item.text || item.threat_content || 'No text content'}
                   </div>
                   
-                  <div className="mt-1 text-xs text-gray-400">
+                  <div className="mt-2 flex items-center justify-between">
+                    <div className="text-xs text-gray-400">
                       Confidence: {((item.confidence || item.threat_confidence/100 || 0) * 100).toFixed(2)}%
                     </div>
+                    
+                    {/* Legal Analysis Button - only show for threats */}
+                    {(item.predicted_class && item.predicted_class !== 'Non-threat/Neutral' && 
+                      item.predicted_class !== 'Not a Threat') && (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation()
+                          analyzeLegalImplications(
+                            item.text || item.threat_content,
+                            item.predicted_class || item.threat_class,
+                            item.id || `item-${index}`
+                          )
+                        }}
+                        disabled={analyzingLegalIds.has(item.id || `item-${index}`)}
+                        className="btn btn-xs btn-warning"
+                        title="Analyze Legal Implications"
+                      >
+                        <FaBalanceScale className={`mr-1 ${analyzingLegalIds.has(item.id || `item-${index}`) ? 'animate-spin' : ''}`} />
+                        {analyzingLegalIds.has(item.id || `item-${index}`) ? 'Analyzing...' : 'Legal'}
+                      </button>
+                    )}
+                  </div>
                   </div>
                 )
               ))}

@@ -8,7 +8,6 @@ const FIRs = () => {
   const [firs, setFirs] = useState([]);
   const [error, setError] = useState(null);
   const [selectedFIR, setSelectedFIR] = useState(null);
-  const [downloading, setDownloading] = useState(null);
 
   useEffect(() => {
     fetchFIRs();
@@ -33,31 +32,6 @@ const FIRs = () => {
 
   const handleViewFIR = (fir) => {
     setSelectedFIR(fir);
-  };
-
-  const handleDownloadPDF = async (firId) => {
-    try {
-      setDownloading(firId);
-      
-      const blob = await apiService.downloadFIRPDF(firId);
-      
-      // Create download link
-      const url = window.URL.createObjectURL(blob);
-      const link = document.createElement('a');
-      link.href = url;
-      link.download = `FIR_${firId}_${new Date().toISOString().split('T')[0]}.pdf`;
-      document.body.appendChild(link);
-      link.click();
-      document.body.removeChild(link);
-      window.URL.revokeObjectURL(url);
-      
-      console.log('✅ FIR PDF downloaded successfully');
-    } catch (error) {
-      console.error('❌ Error downloading FIR PDF:', error);
-      setError('Failed to download PDF: ' + error.message);
-    } finally {
-      setDownloading(null);
-    }
   };
 
   const handleUpdateStatus = async (firId, newStatus) => {
@@ -331,25 +305,24 @@ const FIRs = () => {
                   </div>
 
                   {/* Actions */}
-                  <div className="flex items-center gap-2">
-                    <button 
-                      className="btn btn-sm btn-primary flex-1"
+                  <div className="flex flex-wrap gap-2">
+                    <button
+                      className="btn btn-sm btn-primary"
                       onClick={() => handleViewFIR(fir)}
                     >
-                      <FaEye className="mr-1" />
-                      View
+                      <FaEye className="mr-2" />
+                      View Details
                     </button>
-                    <button 
-                      className="btn btn-sm btn-accent"
-                      onClick={() => handleDownloadPDF(fir.fir_id)}
-                      disabled={downloading === fir.fir_id}
+                    <select
+                      value={fir.status}
+                      onChange={(e) => handleUpdateStatus(fir.fir_id, e.target.value)}
+                      className="select select-sm select-bordered"
                     >
-                      {downloading === fir.fir_id ? (
-                        <FaSpinner className="animate-spin" />
-                      ) : (
-                        <FaDownload />
-                      )}
-                    </button>
+                      <option value="ACTIVE">Active</option>
+                      <option value="INVESTIGATING">Investigating</option>
+                      <option value="RESOLVED">Resolved</option>
+                      <option value="CLOSED">Closed</option>
+                    </select>
                   </div>
                 </motion.div>
               ))}
@@ -410,16 +383,6 @@ const FIRs = () => {
                           {getStatusIcon(selectedFIR.status)}
                           {selectedFIR.status}
                         </span>
-                        <select 
-                          className="select select-sm select-bordered"
-                          value={selectedFIR.status}
-                          onChange={(e) => handleUpdateStatus(selectedFIR.fir_id, e.target.value)}
-                        >
-                          <option value="ACTIVE">Active</option>
-                          <option value="INVESTIGATING">Investigating</option>
-                          <option value="RESOLVED">Resolved</option>
-                          <option value="CLOSED">Closed</option>
-                        </select>
                       </div>
                     </div>
                   </div>
@@ -477,23 +440,6 @@ const FIRs = () => {
                   <div className="flex items-center gap-3 pt-4 border-t border-border-primary/20">
                     <button 
                       className="btn btn-primary"
-                      onClick={() => handleDownloadPDF(selectedFIR.fir_id)}
-                      disabled={downloading === selectedFIR.fir_id}
-                    >
-                      {downloading === selectedFIR.fir_id ? (
-                        <>
-                          <FaSpinner className="animate-spin mr-2" />
-                          Generating PDF...
-                        </>
-                      ) : (
-                        <>
-                          <FaDownload className="mr-2" />
-                          Download PDF
-                        </>
-                      )}
-                    </button>
-                    <button 
-                      className="btn btn-ghost"
                       onClick={() => setSelectedFIR(null)}
                     >
                       Close

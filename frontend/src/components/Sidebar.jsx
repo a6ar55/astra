@@ -17,7 +17,8 @@ import {
   FaRobot,
   FaBrain,
   FaFilePowerpoint,
-  FaGavel
+  FaGavel,
+  FaBalanceScale
 } from 'react-icons/fa'
 import { motion, AnimatePresence } from 'framer-motion'
 import { useUser } from '@clerk/clerk-react'
@@ -29,6 +30,7 @@ const Sidebar = ({ isOpen }) => {
   const [reportsSubmenuOpen, setReportsSubmenuOpen] = useState(false)
   const [socialMediaSubmenuOpen, setSocialMediaSubmenuOpen] = useState(false)
   const [firsSubmenuOpen, setFirsSubmenuOpen] = useState(false)
+  const [legalAnalysisSubmenuOpen, setLegalAnalysisSubmenuOpen] = useState(false)
   
   // Animation variants
   const itemVariants = {
@@ -448,6 +450,62 @@ const Sidebar = ({ isOpen }) => {
                       >
                         <FaFileAlt className={`mr-3 text-xs ${location.pathname === '/firs' ? 'text-primary-400' : 'text-text-muted group-hover:text-primary-400'}`} />
                         <span>View FIRs</span>
+                      </Link>
+                    </motion.li>
+                  </motion.ul>
+                )}
+              </AnimatePresence>
+            </motion.li>
+            
+            {/* Legal Analysis section */}
+            <motion.li variants={itemVariants}>
+              <button 
+                className="group flex items-center justify-between w-full px-4 py-4 text-text-tertiary hover:text-text-primary text-sm font-semibold rounded-xl transition-all duration-300 hover:bg-surface-light/20"
+                onClick={() => setLegalAnalysisSubmenuOpen(!legalAnalysisSubmenuOpen)}
+              >
+                <div className="flex items-center">
+                  <FaBalanceScale className="mr-3 text-warning-400" />
+                  <span>Legal Analysis</span>
+                </div>
+                <motion.div
+                  animate={{ rotate: legalAnalysisSubmenuOpen ? 180 : 0 }}
+                  transition={{ duration: 0.3 }}
+                >
+                  <FaChevronDown />
+                </motion.div>
+              </button>
+              
+              <AnimatePresence>
+                {legalAnalysisSubmenuOpen && (
+                  <motion.ul 
+                    className="mt-3 space-y-2 pl-4"
+                    initial="closed"
+                    animate="open"
+                    exit="closed"
+                    variants={{
+                      open: { 
+                        opacity: 1, 
+                        height: 'auto',
+                        transition: { staggerChildren: 0.05 }
+                      },
+                      closed: { 
+                        opacity: 0, 
+                        height: 0,
+                        transition: { staggerChildren: 0.02, staggerDirection: -1 }
+                      }
+                    }}
+                  >
+                    <motion.li variants={itemVariants}>
+                      <Link 
+                        to="/legal-analysis" 
+                        className={`group flex items-center px-4 py-3 rounded-lg text-sm font-medium transition-all duration-300 ${
+                          location.pathname === '/legal-analysis' 
+                            ? 'bg-primary-500/15 text-primary-300 border-l-2 border-primary-500' 
+                            : 'text-text-tertiary hover:text-text-secondary hover:bg-surface-light/20 border-l-2 border-transparent hover:border-primary-500/50'
+                        }`}
+                      >
+                        <FaFileAlt className={`mr-3 text-xs ${location.pathname === '/legal-analysis' ? 'text-primary-400' : 'text-text-muted group-hover:text-primary-400'}`} />
+                        <span>View Legal Analyses</span>
                       </Link>
                     </motion.li>
                   </motion.ul>

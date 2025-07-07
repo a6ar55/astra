@@ -86,12 +86,28 @@ from geocoding_utils import geocode_location, determine_threat_priority, extract
 
 # Import FIR service
 try:
-    from fir_service import fir_service
+    # Ensure import works whether running from project root or backend directory
+    try:
+        from fir_service import fir_service  # when cwd == backend
+    except ImportError:
+        from backend.fir_service import fir_service  # when cwd == project root
     FIR_ENABLED = True
     logger.info("FIR service loaded successfully")
 except ImportError as e:
     logging.warning(f"FIR service not available: {e}")
     FIR_ENABLED = False
+
+# Import Legal Analysis service
+try:
+    try:
+        from legal_analysis_service import legal_analysis_service  # cwd == backend
+    except ImportError:
+        from backend.legal_analysis_service import legal_analysis_service  # cwd == project root
+    LEGAL_ANALYSIS_ENABLED = True
+    logger.info("Legal Analysis service loaded successfully")
+except ImportError as e:
+    logging.warning(f"Legal Analysis service not available: {e}")
+    LEGAL_ANALYSIS_ENABLED = False
 
 # Logger already configured above
 
@@ -747,6 +763,10 @@ class BriefingRequest(BaseModel):
 
 class FIRRequest(BaseModel):
     threat_data: dict
+
+class LegalAnalysisRequest(BaseModel):
+    content: str
+    threat_class: str
 
 @app.post("/api/twitter/analyze-user")
 async def analyze_twitter_user(request: Request, twitter_request: TwitterAnalysisRequest):
@@ -2849,6 +2869,11 @@ async def download_fir_pdf(request: Request, fir_id: str):
         # Generate PDF
         pdf_path = fir_service.generate_pdf(fir_data)
         
+        # Verify the file exists
+        if not os.path.exists(pdf_path):
+            logger.error(f"PDF file not found at: {pdf_path}")
+            raise HTTPException(status_code=500, detail="PDF file could not be generated")
+        
         # Return file response
         filename = f"FIR_{fir_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.pdf"
         
@@ -2857,14 +2882,120 @@ async def download_fir_pdf(request: Request, fir_id: str):
             path=pdf_path,
             filename=filename,
             media_type='application/pdf',
-            headers={'Content-Disposition': f'attachment; filename="{filename}"'}
+            headers={'Content-Disposition': f'attachment; filename="{filename}"', 'Cache-Control': 'no-cache'}
         )
         
     except HTTPException:
         raise
     except Exception as e:
-        logger.error(f"Error generating PDF for FIR {fir_id}: {e}")
+        logger.error(f"Error generating PDF for FIR {fir_id}: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Failed to generate PDF: {str(e)}")
+
+# Legal Analysis Endpoints
+@app.post("/api/legal/analyze")
+async def analyze_legal_implications(request: Request, legal_request: LegalAnalysisRequest):
+    """Analyze legal implications of threat content"""
+    try:
+        user_id = get_user_id(request)
+        
+        if not LEGAL_ANALYSIS_ENABLED:
+            raise HTTPException(status_code=503, detail="Legal analysis service not available")
+        
+        # Validate input
+        if not legal_request.content or not legal_request.threat_class:
+            raise HTTPException(status_code=400, detail="Content and threat class are required")
+        
+        # Perform legal analysis
+        result = await legal_analysis_service.analyze_legal_implications(
+            legal_request.content,
+            legal_request.threat_class,
+            user_id
+        )
+        
+        return result
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error in legal analysis: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+@app.get("/api/legal/analyses")
+async def get_user_legal_analyses(request: Request, limit: int = 50):
+    """Get all legal analyses for the current user"""
+    try:
+        user_id = get_user_id(request)
+        
+        if not LEGAL_ANALYSIS_ENABLED:
+            raise HTTPException(status_code=503, detail="Legal analysis service not available")
+        
+        analyses = await legal_analysis_service.get_user_legal_analyses(user_id, limit)
+        
+        return {
+            "status": "success",
+            "analyses": analyses,
+            "count": len(analyses)
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching legal analyses: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+@app.get("/api/legal/analyses/{analysis_id}")
+async def get_legal_analysis_by_id(request: Request, analysis_id: str):
+    """Get specific legal analysis by ID"""
+    try:
+        user_id = get_user_id(request)
+        
+        if not LEGAL_ANALYSIS_ENABLED:
+            raise HTTPException(status_code=503, detail="Legal analysis service not available")
+        
+        analysis = await legal_analysis_service.get_legal_analysis_by_id(analysis_id)
+        
+        if not analysis:
+            raise HTTPException(status_code=404, detail="Legal analysis not found")
+        
+        # Check ownership
+        if analysis.get('user_id') != user_id:
+            raise HTTPException(status_code=403, detail="Access denied")
+        
+        return {
+            "status": "success",
+            "analysis": analysis
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error fetching legal analysis: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+@app.delete("/api/legal/analyses/{analysis_id}")
+async def delete_legal_analysis(request: Request, analysis_id: str):
+    """Delete legal analysis"""
+    try:
+        user_id = get_user_id(request)
+        
+        if not LEGAL_ANALYSIS_ENABLED:
+            raise HTTPException(status_code=503, detail="Legal analysis service not available")
+        
+        success = await legal_analysis_service.delete_legal_analysis(analysis_id, user_id)
+        
+        if not success:
+            raise HTTPException(status_code=404, detail="Legal analysis not found or access denied")
+        
+        return {
+            "status": "success",
+            "message": "Legal analysis deleted successfully"
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting legal analysis: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 # Run the server when executed directly
 if __name__ == "__main__":

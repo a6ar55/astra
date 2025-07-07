@@ -427,21 +427,70 @@ class ApiService {
   async updateFIRStatus(firId, status) {
     try {
       const response = await this.client.put(`/fir/${firId}/status?status=${status}`);
+      console.log('✅ FIR status updated successfully:', response.data);
       return response.data;
     } catch (error) {
-      console.error('Error updating FIR status:', error);
+      console.error(`❌ Error updating FIR status for ${firId}:`, error);
       throw error;
     }
   }
 
-  async downloadFIRPDF(firId) {
+  // Legal Analysis API
+  async analyzeLegalImplications(content, threatClass) {
     try {
-      const response = await this.client.get(`/fir/${firId}/pdf`, {
-        responseType: 'blob'
+      console.log('⚖️ Sending for legal analysis:', { content, threat_class: threatClass });
+      
+      const response = await this.client.post('/legal/analyze', {
+        content,
+        threat_class: threatClass
       });
+      
+      console.log('🌐 Legal Analysis API Response:', {
+        status: response.status,
+        statusText: response.statusText,
+        data: response.data,
+        headers: response.headers
+      });
+      
       return response.data;
     } catch (error) {
-      console.error('Error downloading FIR PDF:', error);
+      console.error('🌐 Legal Analysis API Error:', {
+        message: error.message,
+        status: error.response?.status,
+        statusText: error.response?.statusText,
+        data: error.response?.data,
+        config: error.config
+      });
+      throw error;
+    }
+  }
+
+  async getUserLegalAnalyses(limit = 50) {
+    try {
+      const response = await this.client.get(`/legal/analyses?limit=${limit}`);
+      return response.data;
+    } catch (error) {
+      console.error('Error fetching legal analyses:', error);
+      throw error;
+    }
+  }
+
+  async getLegalAnalysisById(analysisId) {
+    try {
+      const response = await this.client.get(`/legal/analyses/${analysisId}`);
+      return response.data;
+    } catch (error) {
+      console.error('Error fetching legal analysis:', error);
+      throw error;
+    }
+  }
+
+  async deleteLegalAnalysis(analysisId) {
+    try {
+      const response = await this.client.delete(`/legal/analyses/${analysisId}`);
+      return response.data;
+    } catch (error) {
+      console.error('Error deleting legal analysis:', error);
       throw error;
     }
   }
