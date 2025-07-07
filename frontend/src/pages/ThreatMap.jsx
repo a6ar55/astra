@@ -270,28 +270,53 @@ const ThreatMap = () => {
             <MapContainer
               center={mapPosition}
               zoom={3}
-              style={{ height: '100%', width: '100%' }}
+              style={{ height: '700px', width: '100%' }}
+              className="rounded-lg"
             >
               <TileLayer
-                attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
                 url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+                attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
               />
-              {threats.map((threat) => (
+              
+              {threats && threats.filter(threat => threat.lat && threat.lng).map((threat) => (
                 <Marker 
-                  key={threat.id}
+                  key={threat.id} 
                   position={[threat.lat, threat.lng]}
                   icon={getMarkerIcon(threat.type)}
                 >
                   <Popup>
-                    <div className="text-slate-900">
-                      <h3 className="font-bold">{threat.title}</h3>
-                      <div className={`mt-1 mb-2 inline-block ${getPriorityColor(threat.priority)} text-white text-xs px-2 py-0.5 rounded-full`}>
-                        {threat.priority.charAt(0).toUpperCase() + threat.priority.slice(1)}
+                    <div className="p-1 max-w-xs">
+                      <h3 className="font-bold text-lg mb-2">{threat.title}</h3>
+                      
+                      <div className={`inline-block px-2 py-1 text-xs font-semibold rounded-full mb-2 ${getPriorityColor(threat.priority)}`}>
+                        {threat.priority?.toUpperCase()} PRIORITY
                       </div>
-                      <p className="text-sm mb-2">{threat.details}</p>
-                      <div className="text-xs text-slate-500 mb-1">Location: {threat.location}</div>
-                      <div className="text-xs text-slate-500">Date: {formatDate(threat.date)}</div>
-                      <div className="text-xs text-slate-500 mb-1">Case ID: {threat.caseId}</div>
+
+                      <p className="text-sm mb-1">
+                        <span className="font-semibold">Type:</span> {threat.type}
+                      </p>
+                      <p className="text-sm mb-1">
+                        <span className="font-semibold">Date:</span> {formatDate(threat.date)}
+                      </p>
+                      <p className="text-sm mb-1">
+                        <span className="font-semibold">Location:</span> {threat.location}
+                      </p>
+                       {threat.twitter_metadata?.username && (
+                        <p className="text-sm mb-1">
+                          <span className="font-semibold">User:</span>
+                          <a 
+                            href={`https://twitter.com/${threat.twitter_metadata.username}`} 
+                            target="_blank" 
+                            rel="noopener noreferrer"
+                            className="text-blue-400 hover:underline ml-1"
+                          >
+                            @{threat.twitter_metadata.username}
+                          </a>
+                        </p>
+                      )}
+                      <p className="text-sm text-gray-200 mt-2 p-2 bg-slate-700 rounded">
+                        "{threat.details}"
+                      </p>
                     </div>
                   </Popup>
                 </Marker>

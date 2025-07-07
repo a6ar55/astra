@@ -166,20 +166,25 @@ def get_coordinates_from_cache(location_str: str) -> Optional[Tuple[float, float
     
     return None
 
-def geocode_location(location_str: str, use_api: bool = False) -> Tuple[float, float]:
+def geocode_location(location_str: str, use_api: bool = False) -> Optional[Tuple[float, float]]:
     """
-    Convert a location string to latitude/longitude coordinates
+    Convert a location string to latitude/longitude coordinates.
+    Returns None if the location cannot be determined.
     
     Args:
         location_str: Location string to geocode
         use_api: Whether to use external geocoding API (currently disabled)
         
     Returns:
-        Tuple of (latitude, longitude)
+        Tuple of (latitude, longitude) or None
     """
-    if not location_str or location_str.strip() == "":
-        # Return random coordinates if no location provided
-        return generate_random_coordinates()
+    if not location_str or not isinstance(location_str, str) or location_str.strip() == "":
+        return None
+
+    # Check for placeholder/negative values
+    location_lower = location_str.lower()
+    if any(placeholder in location_lower for placeholder in ["not available", "n/a", "unknown"]):
+        return None
     
     # Try cache first
     cached_coords = get_coordinates_from_cache(location_str)
@@ -187,36 +192,12 @@ def geocode_location(location_str: str, use_api: bool = False) -> Tuple[float, f
         logger.info(f"Found cached coordinates for '{location_str}': {cached_coords}")
         return cached_coords
     
-    # If not found in cache and API usage is disabled, generate approximate coordinates
-    logger.info(f"Location '{location_str}' not found in cache, generating approximate coordinates")
+    # If not found in cache, we stop here for now as API is disabled
+    # In a future implementation, this is where you would call a real geocoding API
+    # and handle its response.
     
-    # Try to infer region from location string and generate coordinates in that area
-    location_lower = location_str.lower()
-    
-    # US-based inference
-    if any(term in location_lower for term in ['usa', 'united states', 'america', 'us']):
-        # Generate coordinates within continental US
-        return (
-            random.uniform(25.0, 49.0),  # Latitude range for continental US
-            random.uniform(-125.0, -66.0)  # Longitude range for continental US
-        )
-    
-    # Europe-based inference
-    if any(term in location_lower for term in ['europe', 'eu', 'uk', 'england', 'france', 'germany', 'italy', 'spain']):
-        return (
-            random.uniform(35.0, 70.0),   # Latitude range for Europe
-            random.uniform(-10.0, 40.0)   # Longitude range for Europe
-        )
-    
-    # Asia-based inference
-    if any(term in location_lower for term in ['asia', 'china', 'japan', 'korea', 'india', 'singapore', 'thailand']):
-        return (
-            random.uniform(10.0, 50.0),   # Latitude range for Asia
-            random.uniform(70.0, 140.0)   # Longitude range for Asia
-        )
-    
-    # Default: generate random coordinates
-    return generate_random_coordinates()
+    logger.warning(f"Location '{location_str}' not found in cache. No coordinates will be assigned.")
+    return None
 
 def generate_random_coordinates() -> Tuple[float, float]:
     """

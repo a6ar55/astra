@@ -2,12 +2,21 @@ import { useState } from 'react'
 import axios from 'axios'
 import { toast } from 'react-toastify'
 import { FaSpinner, FaUpload, FaFileAlt, FaExclamationTriangle, FaShieldAlt } from 'react-icons/fa'
+import * as pdfjsLib from 'pdfjs-dist/build/pdf'
+import ModelSelector from '../components/ModelSelector'
+
+// Setup worker
+pdfjsLib.GlobalWorkerOptions.workerSrc = new URL(
+  'pdfjs-dist/build/pdf.worker.min.mjs',
+  import.meta.url,
+).toString();
 
 const BatchAnalysis = ({ apiStatus, addToHistory }) => {
   const [texts, setTexts] = useState([])
   const [results, setResults] = useState([])
   const [loading, setLoading] = useState(false)
   const [textInput, setTextInput] = useState('')
+  const [selectedModel, setSelectedModel] = useState('distilbert')
   
   const handleAddText = () => {
     if (!textInput.trim()) {
@@ -22,6 +31,45 @@ const BatchAnalysis = ({ apiStatus, addToHistory }) => {
   const handleRemoveText = (index) => {
     setTexts(prev => prev.filter((_, i) => i !== index))
   }
+  
+  const handlePdfSubmit = async (file) => {
+    if (!file) return;
+
+    setLoading(true);
+    setResults([]);
+    setTexts([]); // Clear previous texts
+    toast.info('Uploading and analyzing PDF...');
+
+    const formData = new FormData();
+    formData.append('file', file);
+    formData.append('model_type', selectedModel);
+
+    try {
+      const response = await axios.post('/api/predict/batch-pdf', formData, {
+        headers: {
+          'Content-Type': 'multipart/form-data',
+          'user_id': axios.defaults.headers.common['user_id'],
+        },
+      });
+
+      const extractedTexts = response.data.results.map(r => r.text);
+      setTexts(extractedTexts);
+      setResults(response.data.results);
+      
+      response.data.results.forEach(result => {
+        if (addToHistory) {
+          addToHistory(result);
+        }
+      });
+
+      toast.success(`Analysis complete for ${response.data.results.length} paragraphs from PDF.`);
+    } catch (error) {
+      console.error('PDF batch prediction error:', error);
+      toast.error(error.response?.data?.detail || 'Failed to analyze PDF.');
+    } finally {
+      setLoading(false);
+    }
+  };
   
   const handleFileUpload = (e) => {
     const file = e.target.files[0]
@@ -79,7 +127,7 @@ const BatchAnalysis = ({ apiStatus, addToHistory }) => {
       const headers = userId ? { 'user_id': userId } : {}
       
       console.log("Sending batch analysis request with headers:", headers)
-      const response = await axios.post('/api/predict/batch', { texts }, { headers })
+      const response = await axios.post('/api/predict/batch', { texts, model_type: selectedModel }, { headers })
       setResults(response.data.results)
       
       // Add each result to history
@@ -168,51 +216,65 @@ const BatchAnalysis = ({ apiStatus, addToHistory }) => {
       
       {/* Input form */}
       <div className="card mb-8">
-        <div className="mb-6">
-          <label htmlFor="textInput" className="block mb-2 font-medium">
-            Add Text
-          </label>
-          <div className="flex">
-            <textarea
-              id="textInput"
-              className="textarea flex-1 mr-2"
-              rows={3}
-              value={textInput}
-              onChange={(e) => setTextInput(e.target.value)}
-              placeholder="Enter text to add to the batch..."
-              disabled={loading}
-            />
-            <button
-              type="button"
-              className="btn btn-primary self-end"
-              onClick={handleAddText}
-              disabled={loading}
-            >
-              Add
-            </button>
-          </div>
-        </div>
-        
-        <div className="mb-6">
-          <label className="block mb-2 font-medium">
-            Upload File
-          </label>
-          <div className="flex items-center">
-            <label className="btn bg-secondary hover:bg-gray-600 text-foreground flex items-center cursor-pointer">
-              <FaUpload className="mr-2" />
-              Choose File
-              <input
-                type="file"
-                accept=".txt,.csv"
-                className="hidden"
-                onChange={handleFileUpload}
+        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+          <div>
+            <label htmlFor="textInput" className="block mb-2 font-medium">
+              Add Text
+            </label>
+            <div className="flex">
+              <textarea
+                id="textInput"
+                className="textarea flex-1 mr-2"
+                rows={3}
+                value={textInput}
+                onChange={(e) => setTextInput(e.target.value)}
+                placeholder="Enter text to add to the batch..."
                 disabled={loading}
               />
-            </label>
-            <span className="ml-3 text-sm text-gray-400">
-              Text file with one text per line (.txt, .csv)
-            </span>
+              <button
+                type="button"
+                className="btn btn-primary self-end"
+                onClick={handleAddText}
+                disabled={loading}
+              >
+                Add
+              </button>
+            </div>
           </div>
+          <div>
+            <label className="block mb-2 font-medium">
+              Upload File
+            </label>
+            <div className="flex items-center space-x-2">
+              <label className="btn bg-secondary hover:bg-gray-600 text-foreground flex items-center cursor-pointer">
+                <FaUpload className="mr-2" />
+                TXT/CSV
+                <input
+                  type="file"
+                  accept=".txt,.csv"
+                  className="hidden"
+                  onChange={handleFileUpload}
+                  disabled={loading}
+                />
+              </label>
+               <label className="btn bg-red-600 hover:bg-red-700 text-white flex items-center cursor-pointer">
+                <FaUpload className="mr-2" />
+                PDF
+                <input
+                  type="file"
+                  accept=".pdf"
+                  className="hidden"
+                  onChange={(e) => handlePdfSubmit(e.target.files[0])}
+                  disabled={loading}
+                />
+              </label>
+            </div>
+            <p className="text-sm text-gray-400 mt-2">Upload a text file (one text per line) or a PDF.</p>
+          </div>
+        </div>
+
+        <div className="my-6">
+            <ModelSelector selectedModel={selectedModel} onModelChange={setSelectedModel} />
         </div>
         
         {/* Text list */}
@@ -282,7 +344,23 @@ const BatchAnalysis = ({ apiStatus, addToHistory }) => {
       {/* Results */}
       {results.length > 0 && (
         <div className="card">
-          <h2 className="text-xl font-semibold mb-4">Analysis Results</h2>
+          <div className="flex justify-between items-center mb-4">
+            <h2 className="text-xl font-bold">Analysis Results</h2>
+            <button 
+              className="btn btn-primary"
+              onClick={handleSubmit}
+              disabled={loading || texts.length === 0}
+            >
+              {loading ? (
+                <>
+                  <FaSpinner className="animate-spin mr-2" />
+                  Analyzing...
+                </>
+              ) : (
+                'Analyze All'
+              )}
+            </button>
+          </div>
           
           <div className="overflow-x-auto">
             <table className="w-full">

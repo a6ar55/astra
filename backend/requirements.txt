@@ -20,4 +20,5 @@ Pillow>=10.4.0
 beautifulsoup4==4.12.2
 aiofiles>=24.1.0
 reportlab>=4.0.0
-aiohttp>=3.12.0 
+aiohttp>=3.12.0
+PyMuPDF 

@@ -33,6 +33,7 @@ import google.generativeai as genai
 from pptx.util import Inches, Pt
 from pptx.enum.text import PP_ALIGN
 from pptx.dml.color import RGBColor
+import fitz # PyMuPDF
 
 # Configure logging first
 logging.basicConfig(
@@ -371,6 +372,45 @@ async def predict(request: Request, prediction_request: PredictionRequest):
             result["firebase_save_error"] = str(e)
 
     return result
+
+@app.post("/api/predict/batch-pdf")
+async def predict_batch_pdf(request: Request, model_type: str = Form("distilbert"), file: UploadFile = File(...)):
+    user_id = get_user_id(request)
+    logger.info(f"Processing batch PDF prediction for user: {user_id}, model: {model_type}")
+
+    # Check if the requested model is available
+    available_models = model_loader.get_available_models()
+    if model_type not in available_models or not available_models[model_type]:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Model '{model_type}' is not available. Available models: {[k for k, v in available_models.items() if v]}"
+        )
+
+    try:
+        pdf_content = await file.read()
+        document = fitz.open(stream=pdf_content, filetype="pdf")
+        
+        paragraphs = []
+        for page_num in range(len(document)):
+            page = document.load_page(page_num)
+            blocks = page.get_text("blocks")
+            for block in blocks:
+                text = block[4]
+                if len(text.strip()) > 50: # Filter out short text blocks
+                    paragraphs.append(text.strip())
+        
+        if not paragraphs:
+            raise HTTPException(status_code=400, detail="Could not extract any text paragraphs from the PDF.")
+
+        logger.info(f"Extracted {len(paragraphs)} paragraphs from the PDF.")
+        
+        # Now, we can reuse the existing batch prediction logic by creating a new request
+        batch_request = BatchPredictionRequest(texts=paragraphs, model_type=model_type)
+        return await predict_batch(request, batch_request)
+
+    except Exception as e:
+        logger.error(f"Error processing PDF for batch analysis: {e}")
+        raise HTTPException(status_code=500, detail=f"Failed to process PDF file: {str(e)}")
 
 # Get user stats
 @app.get("/api/user/stats")
@@ -770,311 +810,196 @@ class LegalAnalysisRequest(BaseModel):
 
 @app.post("/api/twitter/analyze-user")
 async def analyze_twitter_user(request: Request, twitter_request: TwitterAnalysisRequest):
-    """Analyze a Twitter user's tweets and save to Firebase"""
+    """
+    Analyzes a user's tweets for threats, geolocates them, and saves them.
+    This version is corrected to only geolocate threats with valid locations.
+    """
     user_id = get_user_id(request)
-    model_type = twitter_request.model_type or "distilbert"
-    logger.info(f"Processing Twitter user analysis for user: {user_id}, analyzing {len(twitter_request.tweets)} tweets for @{twitter_request.username} using {model_type}")
-    
-    # Check if the requested model is available
-    available_models = model_loader.get_available_models()
-    if model_type not in available_models or not available_models[model_type]:
-        raise HTTPException(
-            status_code=400, 
-            detail=f"Model '{model_type}' is not available. Available models: {[k for k, v in available_models.items() if v]}"
-        )
-    
-    analyzed_tweets = []
-    threat_count = 0
-    
-    for tweet in twitter_request.tweets:
-        tweet_text = tweet.get('content', '')
-        if not tweet_text:
-            continue
+    model_type = twitter_request.model_type
+    logger.info(f"Received request to analyze {len(twitter_request.tweets)} tweets for user @{twitter_request.username} with model '{model_type}'")
+
+    if not model_loader.is_model_available(model_type):
+        logger.error(f"Model '{model_type}' not available for analysis.")
+        raise HTTPException(status_code=400, detail=f"Model '{model_type}' is not available.")
+
+    analysis_results = []
+    processed_tweets = 0
+    threats_found = 0
+
+    try:
+        texts_to_analyze = [tweet.get('text', '') for tweet in twitter_request.tweets]
+        
+        # Use the model_loader's batch prediction
+        batch_results = model_loader.predict_batch(texts_to_analyze, model_type)
+
+        for i, result in enumerate(batch_results):
+            tweet = twitter_request.tweets[i]
+            tweet_text = tweet.get('text', '')
             
-        # Analyze the tweet using selected model
-        result = None
-        try:
-            model_result = model_loader.predict(tweet_text, model_type=model_type)
-            if model_result.get("success", False):
-                result = model_result
+            if not tweet_text:
+                continue
+
+            processed_tweets += 1
+            analysis_results.append({
+                "tweet": tweet_text,
+                "analysis": result
+            })
+
+            # If a threat is detected, process its location
+            if result.get("threat", False):
+                threats_found += 1
+                try:
+                    # Initialize location string
+                    location_str = None
+
+                    # 1. Try to get location from the tweet object itself (most accurate)
+                    if tweet.get('location'):
+                        location_str = tweet['location']
+
+                    # 2. Fallback to user's profile location if tweet location is not available
+                    if not location_str and twitter_request.userInfo:
+                        location_str = twitter_request.userInfo.get('location')
+
+                    # If a valid location string exists, try to geocode it
+                    if location_str:
+                        coords = geocode_location(location_str)
+                        
+                        # ONLY if geocoding is successful, add to map
+                        if coords:
+                            lat, lng = coords
+                            
+                            predicted_class = result.get('predicted_class', 'Unknown')
+                            confidence = result.get('confidence', 0.0)
+                            priority = determine_threat_priority(predicted_class, confidence)
+                            
+                            threat_data = {
+                                "id": f"TWT-{tweet.get('id', str(uuid.uuid4())[:8])}",
+                                "user_id": user_id,
+                                "type": predicted_class,
+                                "priority": priority,
+                                "lat": lat,
+                                "lng": lng,
+                                "title": f"{predicted_class} from @{twitter_request.username}",
+                                "location": location_str,
+                                "timestamp": tweet.get('created_at', datetime.now().isoformat()),
+                                "source": "twitter",
+                                "text": tweet_text,
+                                "user_metadata": {"username": twitter_request.username}
+                            }
+                            
+                            saved_location = add_threat_location(user_id, threat_data)
+                            if saved_location:
+                                logger.info(f"✅ Saved geocoded threat from @{twitter_request.username} at '{location_str}'")
+                            else:
+                                logger.warning(f"⚠️ Failed to save threat location for @{twitter_request.username}")
+                        else:
+                            logger.info(f"⏭️ Skipping map for threat from @{twitter_request.username}, location '{location_str}' not geocodable.")
+                
+                except Exception as location_error:
+                    logger.error(f"❌ Error processing location for @{twitter_request.username}: {location_error}")
+            
+            # Update user stats regardless of location
+            if result.get("threat", False):
+                try:
+                    update_user_threat_stats(user_id, result['predicted_class'])
+                except Exception as stats_error:
+                    logger.error(f"Failed to update user stats for {user_id}: {stats_error}")
+        
+        logger.info(f"Completed analysis for @{twitter_request.username}. Processed: {processed_tweets}, Threats Found: {threats_found}")
+        
+        return {
+            "message": "Analysis complete",
+            "username": twitter_request.username,
+            "processed_tweets": processed_tweets,
+            "threats_found": threats_found,
+            "results": analysis_results
+        }
+
+    except Exception as e:
+        logger.error(f"An error occurred during Twitter user analysis for @{twitter_request.username}: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/twitter/analyze-tweet")
+async def analyze_single_tweet(request: Request, tweet_request: SingleTweetAnalysisRequest):
+    """
+    Analyzes a single tweet for threats and saves the result.
+    This version is corrected to only geolocate threats with valid locations.
+    """
+    user_id = get_user_id(request)
+    model_type = tweet_request.model_type
+    tweet_text = tweet_request.tweet_text
+    
+    logger.info(f"Received request to analyze single tweet with model '{model_type}'")
+
+    if not model_loader.is_model_available(model_type):
+        logger.error(f"Model '{model_type}' not available for analysis.")
+        raise HTTPException(status_code=400, detail=f"Model '{model_type}' is not available.")
+    
+    if not tweet_text:
+        raise HTTPException(status_code=400, detail="Tweet text cannot be empty.")
+
+    try:
+        # Perform prediction
+        result = model_loader.predict(tweet_text, model_type)
+
+        # Process the result
+        if result.get("threat", False):
+            try:
+                # Add metadata to the result
                 result["timestamp"] = datetime.now().isoformat()
                 result["text"] = tweet_text
-            else:
-                logger.error(f"Model prediction failed for tweet: {model_result}")
-                continue  # Skip this tweet if prediction fails
-        except Exception as e:
-            logger.error(f"Error during Twitter tweet prediction: {str(e)}")
-            continue  # Skip this tweet if prediction fails
-        
-        # Only process if we have a real result
-        if not result:
-            continue
-        
-        # Add Twitter-specific metadata including user profile information
-        result["twitter_metadata"] = {
-            "username": twitter_request.username,
-            "tweet_id": tweet.get('id'),
-            "created_at": tweet.get('created_at'),
-            "likes": tweet.get('likes', 0),
-            "retweets": tweet.get('retweets', 0),
-            "analysis_type": "twitter_user_analysis"
-        }
-        
-        # Add user metadata from userInfo if available
-        if twitter_request.userInfo:
-            user_info = twitter_request.userInfo
-            result["user_metadata"] = {
-                "display_name": user_info.get('name') or user_info.get('display_name', ''),
-                "twitter_handle": twitter_request.username,
-                "profile_image": user_info.get('profile_image_url') or user_info.get('profile_pic_url') or user_info.get('profile_image_url_https', ''),
-                "location": user_info.get('location', ''),
-                "bio": user_info.get('description', ''),
-                "followers_count": user_info.get('followers_count', 0),
-                "following_count": user_info.get('friends_count', 0),
-                "verified": user_info.get('verified', False),
-                "account_created": user_info.get('created_at', ''),
-                "public_metrics": user_info.get('public_metrics', {})
-            }
-        
-        # Save to Firebase if user is not anonymous
-        if user_id != "anonymous":
-            try:
-                # Create enhanced text for storage that includes context
-                enhanced_text = f"Tweet by @{twitter_request.username}: {tweet_text}"
-                history_item = add_analysis_to_history(user_id, enhanced_text, result)
+                result["source"] = "single_tweet_analysis"
+
+                # Save to user's history
+                history_item = add_analysis_to_history(user_id, tweet_text, result)
                 if history_item:
                     result["id"] = history_item.get("id")
-                    
-                # Update user's stats
-                update_user_threat_stats(user_id, result)
+
+                # Update user's aggregate stats
+                update_user_threat_stats(user_id, result['predicted_class'])
+
+                # Geocode and save to threat map if location is available
+                location_str = tweet_request.tweet_metadata.get("location") if tweet_request.tweet_metadata else None
                 
-                # Save to threat map if this is a threat
-                if result.get("threat", False):
-                    try:
-                        # Extract location from user info - enhanced location extraction
-                        location_str = ""
-                        
-                        # Try to get location from userInfo using enhanced Twitter API response parser
-                        if twitter_request.userInfo:
-                            location_str = extract_location_from_twitter_api_response(twitter_request.userInfo)
-                            
-                            # Fallback to standard user data extraction if Twitter API response parsing fails
-                            if not location_str:
-                                location_str = extract_location_from_user_data(twitter_request.userInfo)
-                        
-                        # Fallback: try to extract from tweet location data if available
-                        if not location_str and 'location' in tweet:
-                            location_str = tweet.get('location', '')
-                        
-                        # Default if no location found
-                        if not location_str:
-                            location_str = f"Social media threat from @{twitter_request.username}"
-                        
-                        # Geocode the location
-                        lat, lng = geocode_location(location_str)
-                        
-                        # Determine priority
+                if location_str:
+                    coords = geocode_location(location_str)
+                    if coords:
+                        lat, lng = coords
                         predicted_class = result.get('predicted_class', 'Unknown')
                         confidence = result.get('confidence', 0.0)
                         priority = determine_threat_priority(predicted_class, confidence)
                         
-                        # Create threat location entry
                         threat_data = {
-                            "id": f"THR-{result.get('id', str(uuid.uuid4())[:8])}",
+                            "id": f"SNG-{result.get('id', str(uuid.uuid4())[:8])}",
+                            "user_id": user_id,
                             "type": predicted_class,
+                            "priority": priority,
                             "lat": lat,
                             "lng": lng,
-                            "title": f"{predicted_class} detected from @{twitter_request.username}",
+                            "title": f"{predicted_class} from {tweet_request.username or 'Unknown User'}",
                             "location": location_str,
-                            "date": result.get('timestamp', datetime.now().isoformat()),
-                            "priority": priority,
-                            "details": tweet_text[:100] + ("..." if len(tweet_text) > 100 else ""),
-                            "caseId": f"THP-{str(uuid.uuid4())[:8]}",
-                            "source": "twitter_user_analysis",
-                            "confidence": confidence,
-                            "predicted_class": predicted_class,
-                            "twitter_metadata": result["twitter_metadata"],
-                            "user_metadata": result.get("user_metadata", {}),
-                            "text": tweet_text
+                            "timestamp": datetime.now().isoformat(),
+                            "source": "single_tweet",
+                            "text": tweet_text,
+                            "user_metadata": {"username": tweet_request.username}
                         }
                         
-                        # Save to threat map
                         saved_location = add_threat_location(user_id, threat_data)
                         if saved_location:
-                            logger.info(f"✅ Saved threat location for @{twitter_request.username} threat at {location_str}")
+                            logger.info(f"✅ Saved geocoded threat from single tweet at '{location_str}'")
                         else:
-                            logger.warning(f"⚠️ Failed to save threat location for @{twitter_request.username}")
-                            
-                    except Exception as location_error:
-                        logger.error(f"❌ Error saving threat location for @{twitter_request.username}: {location_error}")
-                
-            except Exception as e:
-                logger.error(f"Error saving Twitter analysis to Firebase: {e}")
-        
-        if result.get("threat", False):
-            threat_count += 1
-            
-        analyzed_tweets.append(result)
-    
-    # Create summary
-    summary = {
-        "username": twitter_request.username,
-        "total_tweets": len(analyzed_tweets),
-        "threat_tweets": threat_count,
-        "threat_percentage": (threat_count / len(analyzed_tweets) * 100) if analyzed_tweets else 0,
-        "analysis_timestamp": datetime.now().isoformat(),
-        "user_info": twitter_request.userInfo
-    }
-    
-    logger.info(f"Twitter analysis complete: {threat_count}/{len(analyzed_tweets)} threats detected for @{twitter_request.username}")
-    
-    return {
-        "summary": summary,
-        "analyzed_tweets": analyzed_tweets,
-        "success": True
-    }
-
-@app.post("/api/twitter/analyze-tweet")
-async def analyze_single_tweet(request: Request, tweet_request: SingleTweetAnalysisRequest):
-    """Analyze a single tweet and save to Firebase"""
-    user_id = get_user_id(request)
-    tweet_text = tweet_request.tweet_text
-    model_type = tweet_request.model_type or "distilbert"
-    
-    logger.info(f"Processing single tweet analysis for user: {user_id} using {model_type}")
-    
-    # Check if the requested model is available
-    available_models = model_loader.get_available_models()
-    if model_type not in available_models or not available_models[model_type]:
-        raise HTTPException(
-            status_code=400, 
-            detail=f"Model '{model_type}' is not available. Available models: {[k for k, v in available_models.items() if v]}"
-        )
-    
-    # Analyze the tweet using selected model
-    result = None
-    try:
-        model_result = model_loader.predict(tweet_text, model_type=model_type)
-        if model_result.get("success", False):
-            result = model_result
-            result["timestamp"] = datetime.now().isoformat()
-            result["text"] = tweet_text
-        else:
-            logger.error(f"Model prediction failed for single tweet: {model_result}")
-            raise HTTPException(status_code=500, detail=f"Model prediction failed: {model_result.get('error', 'Unknown error')}")
-    except HTTPException as http_err:
-        raise http_err
-    except Exception as e:
-        logger.error(f"Error during single tweet prediction: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Model prediction error: {str(e)}")
-    
-    # Only continue if we have a real result
-    if not result:
-        raise HTTPException(status_code=500, detail="Failed to analyze tweet")
-    
-    # Add Twitter metadata if provided
-    if tweet_request.username or tweet_request.tweet_metadata:
-        result["twitter_metadata"] = {
-            "username": tweet_request.username,
-            "analysis_type": "single_tweet_analysis",
-            **(tweet_request.tweet_metadata or {})
-        }
-        
-        # Add user metadata if available in tweet_metadata
-        if tweet_request.tweet_metadata:
-            metadata = tweet_request.tweet_metadata
-            logger.info(f"🔍 Received tweet metadata for @{tweet_request.username}: {metadata}")
-            
-            result["user_metadata"] = {
-                "display_name": metadata.get('user_name') or metadata.get('display_name', ''),
-                "twitter_handle": tweet_request.username,
-                "profile_image": metadata.get('user_profile_image_url') or metadata.get('profile_image_url') or metadata.get('profile_pic_url', ''),
-                "location": metadata.get('user_location') or metadata.get('location', ''),
-                "bio": metadata.get('user_description') or metadata.get('description', ''),
-                "followers_count": metadata.get('user_followers_count', 0),
-                "following_count": metadata.get('user_friends_count', 0),
-                "verified": metadata.get('user_verified', False),
-                "account_created": metadata.get('user_created_at', ''),
-                "public_metrics": metadata.get('user_public_metrics', {})
-            }
-            
-            logger.info(f"✅ Created user metadata for @{tweet_request.username}: {result['user_metadata']}")
-    
-    # Save to Firebase if user is not anonymous
-    if user_id != "anonymous":
-        try:
-            enhanced_text = f"Tweet: {tweet_text}"
-            if tweet_request.username:
-                enhanced_text = f"Tweet by @{tweet_request.username}: {tweet_text}"
-                
-            history_item = add_analysis_to_history(user_id, enhanced_text, result)
-            if history_item:
-                result["id"] = history_item.get("id")
-                
-            # Update user's stats
-            update_user_threat_stats(user_id, result)
-            
-            # Save to threat map if this is a threat
-            if result.get("threat", False):
-                try:
-                    # Enhanced location extraction for single tweet
-                    location_str = ""
-                    
-                    # Try to extract location from tweet metadata if available
-                    if tweet_request.tweet_metadata:
-                        if 'location' in tweet_request.tweet_metadata:
-                            location_str = tweet_request.tweet_metadata.get('location', '')
-                        elif 'user_location' in tweet_request.tweet_metadata:
-                            location_str = tweet_request.tweet_metadata.get('user_location', '')
-                    
-                    # Use username for location fallback
-                    if not location_str and tweet_request.username:
-                        location_str = f"Social media threat from @{tweet_request.username}"
-                    elif not location_str:
-                        location_str = "Social media threat (unknown location)"
-                    
-                    # Geocode the location
-                    lat, lng = geocode_location(location_str)
-                    
-                    # Determine priority
-                    predicted_class = result.get('predicted_class', 'Unknown')
-                    confidence = result.get('confidence', 0.0)
-                    priority = determine_threat_priority(predicted_class, confidence)
-                    
-                    # Create threat location entry
-                    threat_data = {
-                        "id": f"THR-{result.get('id', str(uuid.uuid4())[:8])}",
-                        "type": predicted_class,
-                        "lat": lat,
-                        "lng": lng,
-                        "title": f"{predicted_class} detected" + (f" from @{tweet_request.username}" if tweet_request.username else ""),
-                        "location": location_str,
-                        "date": result.get('timestamp', datetime.now().isoformat()),
-                        "priority": priority,
-                        "details": tweet_text[:100] + ("..." if len(tweet_text) > 100 else ""),
-                        "caseId": f"THP-{str(uuid.uuid4())[:8]}",
-                        "source": "single_tweet_analysis",
-                        "confidence": confidence,
-                        "predicted_class": predicted_class,
-                        "twitter_metadata": result.get("twitter_metadata", {}),
-                        "user_metadata": result.get("user_metadata", {}),
-                        "text": tweet_text
-                    }
-                    
-                    # Save to threat map
-                    saved_location = add_threat_location(user_id, threat_data)
-                    if saved_location:
-                        logger.info(f"✅ Saved threat location for single tweet analysis")
+                            logger.warning("⚠️ Failed to save threat location for single tweet")
                     else:
-                        logger.warning(f"⚠️ Failed to save threat location for single tweet")
-                        
-                except Exception as location_error:
-                    logger.error(f"❌ Error saving threat location for single tweet: {location_error}")
-            
-        except Exception as e:
-            logger.error(f"Error saving single tweet analysis to Firebase: {e}")
-    
-    return result
+                        logger.info(f"⏭️ Skipping map for single tweet, location '{location_str}' not geocodable.")
+
+            except Exception as e:
+                logger.error(f"Error processing threat details for single tweet: {e}", exc_info=True)
+
+        return {"success": True, "analysis": result}
+
+    except Exception as e:
+        logger.error(f"An error occurred during single tweet analysis: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=str(e))
 
 # Enhanced endpoint to get Twitter threats from history
 @app.get("/api/twitter/threats")
@@ -2482,39 +2407,41 @@ def generate_threats_from_user_history(user_id):
                 location_str = "Unknown Location"
             
             # Geocode the location
-            lat, lng = geocode_location(location_str)
-            
-            # Determine priority
-            predicted_class = item.get('predicted_class', 'Unknown')
-            confidence = item.get('confidence', 0.0)
-            priority = determine_threat_priority(predicted_class, confidence)
-            
-            # Create threat location entry
-            threat_data = {
-                "id": f"THR-{item.get('id', str(uuid.uuid4())[:8])}",
-                "type": predicted_class,
-                "lat": round(lat, 6),
-                "lng": round(lng, 6),
-                "title": f"{predicted_class} detected",
-                "location": location_str,
-                "date": item.get('timestamp', datetime.now().isoformat()),
-                "priority": priority,
-                "details": item.get('text', 'No details available')[:100] + ("..." if len(item.get('text', '')) > 100 else ""),
-                "caseId": f"THP-{str(uuid.uuid4())[:8]}",
-                "source": "user_history",
-                "confidence": confidence,
-                "predicted_class": predicted_class,
-                "twitter_metadata": item.get('twitter_metadata', {}),
-                "text": item.get('text', '')
-            }
-            
-            # Save to Firebase for future use
-            add_threat_location(user_id, threat_data)
-            threats.append(threat_data)
-            
-            processed_count += 1
-            if processed_count >= 50:  # Limit to 50 threats max
-                break
+            coords = geocode_location(location_str)
+            if coords:
+                lat, lng = coords
+                
+                # Determine priority
+                predicted_class = item.get('predicted_class', 'Unknown')
+                confidence = item.get('confidence', 0.0)
+                priority = determine_threat_priority(predicted_class, confidence)
+                
+                # Create threat location entry
+                threat_data = {
+                    "id": f"THR-{item.get('id', str(uuid.uuid4())[:8])}",
+                    "type": predicted_class,
+                    "lat": lat,
+                    "lng": lng,
+                    "title": f"{predicted_class} detected",
+                    "location": location_str,
+                    "date": item.get('timestamp', datetime.now().isoformat()),
+                    "priority": priority,
+                    "details": item.get('text', 'No details available')[:100] + ("..." if len(item.get('text', '')) > 100 else ""),
+                    "caseId": f"THP-{str(uuid.uuid4())[:8]}",
+                    "source": "user_history",
+                    "confidence": confidence,
+                    "predicted_class": predicted_class,
+                    "twitter_metadata": item.get('twitter_metadata', {}),
+                    "text": item.get('text', '')
+                }
+                
+                # Save to Firebase for future use
+                add_threat_location(user_id, threat_data)
+                threats.append(threat_data)
+                
+                processed_count += 1
+                if processed_count >= 50:  # Limit to 50 threats max
+                    break
         
         logger.info(f"Generated {len(threats)} threat locations from user history for user {user_id}")
         return threats
